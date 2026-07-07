@@ -4,13 +4,14 @@
 firebase.initializeApp({
   apiKey: "AIzaSyBH7h6g0yB1DQe2id_4T8T-ARsFd6-r2vk",
   authDomain: "gymtrack-fe4f3.firebaseapp.com",
+  databaseURL: "https://gymtrack-fe4f3-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "gymtrack-fe4f3",
   storageBucket: "gymtrack-fe4f3.firebasestorage.app",
   messagingSenderId: "853105062727",
   appId: "1:853105062727:web:330ef0eb5b21e5b6421262"
 });
 const auth = firebase.auth();
-const db   = firebase.firestore();
+const db   = firebase.database();
 
 // Cache em memória (fonte de verdade para leituras síncronas)
 let cache = {
@@ -19,20 +20,21 @@ let cache = {
 };
 let currentUid = null;
 
-function userRef() { return db.collection('users').doc(currentUid).collection('app'); }
+function userRef() { return db.ref('users/' + currentUid + '/app'); }
 
-async function loadFromFirestore() {
+async function loadFromCloud() {
   try {
     const snap = await userRef().get();
-    snap.forEach(doc => {
-      if (cache[doc.id] !== undefined) cache[doc.id] = doc.data().value;
+    const data = snap.val() || {};
+    Object.keys(data).forEach(key => {
+      if (cache[key] !== undefined) cache[key] = data[key];
     });
-  } catch(e) { console.warn('Firestore load error', e); }
+  } catch(e) { console.warn('Database load error', e); }
 }
 
-function saveToFirestore(key) {
+function saveToCloud(key) {
   if (!currentUid) return;
-  userRef().doc(key).set({ value: cache[key] }).catch(e => console.warn('Save error', e));
+  userRef().child(key).set(cache[key]).catch(e => console.warn('Save error', e));
 }
 
 function signInGoogle() {
@@ -50,7 +52,7 @@ auth.onAuthStateChanged(async user => {
     currentUid = user.uid;
     document.getElementById('login-screen').classList.remove('show');
     document.getElementById('app-loading').classList.add('show');
-    await loadFromFirestore();
+    await loadFromCloud();
     document.getElementById('user-avatar').src = user.photoURL || '';
     document.getElementById('app-loading').classList.remove('show');
     document.getElementById('app').style.display = 'block';
@@ -136,7 +138,7 @@ function getOrCreateSession(date) {
 
 function saveSessions() {
   cache.sessions = cache.sessions.filter(s => s.entries.length > 0);
-  saveToFirestore('sessions');
+  saveToCloud('sessions');
 }
 
 // Última vez que este exercício foi treinado antes da data atual
@@ -338,7 +340,7 @@ function addExerciseFromModal(ev) {
   if (!name) return;
   const ex = { id: uid(), name };
   cache.exercises.push(ex);
-  saveToFirestore('exercises');
+  saveToCloud('exercises');
   addEntryToSession(ex.id);
   closeExerciseModal();
 }
@@ -392,7 +394,7 @@ function deleteSession(id) {
   const s = cache.sessions.find(x => x.id === id);
   if (!confirm(`Excluir o treino de ${fmtDateShort(s.date)}?`)) return;
   cache.sessions = cache.sessions.filter(x => x.id !== id);
-  saveToFirestore('sessions');
+  saveToCloud('sessions');
   renderHistorico();
 }
 
@@ -503,7 +505,7 @@ function addExercise(ev) {
   const name = input.value.trim();
   if (!name) return;
   cache.exercises.push({ id: uid(), name });
-  saveToFirestore('exercises');
+  saveToCloud('exercises');
   input.value = '';
   renderExercicios();
 }
@@ -513,7 +515,7 @@ function renameExercise(id) {
   const name = prompt('Novo nome:', ex.name);
   if (!name || !name.trim()) return;
   ex.name = name.trim();
-  saveToFirestore('exercises');
+  saveToCloud('exercises');
   renderExercicios();
 }
 
@@ -524,7 +526,7 @@ function deleteExercise(id) {
     : 'Excluir este exercício?';
   if (!confirm(msg)) return;
   cache.exercises = cache.exercises.filter(e => e.id !== id);
-  saveToFirestore('exercises');
+  saveToCloud('exercises');
   if (expandedExId === id) expandedExId = null;
   renderExercicios();
 }
