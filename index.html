@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GymTrack 🏋️</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+</head>
+<body>
+
+<!-- ══ LOGIN ══ -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-logo">🏋️</div>
+    <h1>GymTrack</h1>
+    <p>Registre seus treinos, pesos e repetições e acompanhe sua evolução.</p>
+    <button class="btn-google" onclick="signInGoogle()">
+      <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.6-.4-3.9z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15 19 12 24 12c3.1 0 5.9 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C41.4 34.9 44 29.9 44 24c0-1.3-.1-2.6-.4-3.9z"/></svg>
+      Entrar com Google
+    </button>
+  </div>
+</div>
+
+<!-- ══ LOADING ══ -->
+<div id="app-loading"><div class="spinner"></div><p>Carregando seus treinos...</p></div>
+
+<!-- ══ APP ══ -->
+<div id="app" style="display:none">
+  <header>
+    <div class="header-left"><h1>🏋️ GymTrack</h1></div>
+    <div class="header-right">
+      <button class="btn-icon" id="dark-btn" onclick="toggleDark()" title="Modo escuro">🌙</button>
+      <img id="user-avatar" src="" alt="" onclick="signOut()" title="Sair">
+    </div>
+  </header>
+
+  <main>
+    <!-- ── TAB: TREINO ── -->
+    <section id="tab-treino" class="tab">
+      <div class="date-bar">
+        <button class="btn-icon" onclick="shiftDate(-1)">◀</button>
+        <div class="date-center">
+          <input type="date" id="treino-date" onchange="setDate(this.value)">
+          <span id="date-label"></span>
+        </div>
+        <button class="btn-icon" onclick="shiftDate(1)">▶</button>
+      </div>
+      <div id="treino-summary"></div>
+      <div id="treino-entries"></div>
+      <button class="btn-primary btn-block" onclick="openExerciseModal()">＋ Adicionar exercício</button>
+    </section>
+
+    <!-- ── TAB: HISTÓRICO ── -->
+    <section id="tab-historico" class="tab" style="display:none">
+      <h2>Histórico de treinos</h2>
+      <div id="historico-list"></div>
+    </section>
+
+    <!-- ── TAB: EXERCÍCIOS ── -->
+    <section id="tab-exercicios" class="tab" style="display:none">
+      <h2>Meus exercícios</h2>
+      <form class="add-form" onsubmit="addExercise(event)">
+        <input type="text" id="new-ex-name" placeholder="Nome do exercício (ex: Supino reto)" required>
+        <button type="submit" class="btn-primary">＋</button>
+      </form>
+      <div id="exercicios-list"></div>
+    </section>
+  </main>
+
+  <nav id="bottom-nav">
+    <button class="nav-btn active" data-tab="treino" onclick="showTab('treino')"><span>🏋️</span>Treino</button>
+    <button class="nav-btn" data-tab="historico" onclick="showTab('historico')"><span>📅</span>Histórico</button>
+    <button class="nav-btn" data-tab="exercicios" onclick="showTab('exercicios')"><span>📋</span>Exercícios</button>
+  </nav>
+</div>
+
+<!-- ══ MODAL: escolher exercício ══ -->
+<div id="modal-exercise" class="modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeExerciseModal()">✕</button>
+    <h3>Adicionar exercício ao treino</h3>
+    <div id="modal-ex-list"></div>
+    <form class="add-form" onsubmit="addExerciseFromModal(event)">
+      <input type="text" id="modal-ex-name" placeholder="Ou crie um novo...">
+      <button type="submit" class="btn-primary">Criar</button>
+    </form>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
