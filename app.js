@@ -1,15 +1,13 @@
 /* ══════════════════════════════════
    FIREBASE — INIT + AUTH + DATA
 ══════════════════════════════════ */
-// ⚠️ Substitua pelo firebaseConfig do seu projeto:
-// Console Firebase → gymtrack → Adicionar app → Web (</>) → copiar config
 firebase.initializeApp({
-  apiKey: "COLE_AQUI",
-  authDomain: "COLE_AQUI.firebaseapp.com",
-  projectId: "gymtrack",
-  storageBucket: "COLE_AQUI.firebasestorage.app",
-  messagingSenderId: "COLE_AQUI",
-  appId: "COLE_AQUI"
+  apiKey: "AIzaSyBH7h6g0yB1DQe2id_4T8T-ARsFd6-r2vk",
+  authDomain: "gymtrack-fe4f3.firebaseapp.com",
+  projectId: "gymtrack-fe4f3",
+  storageBucket: "gymtrack-fe4f3.firebasestorage.app",
+  messagingSenderId: "853105062727",
+  appId: "1:853105062727:web:330ef0eb5b21e5b6421262"
 });
 const auth = firebase.auth();
 const db   = firebase.firestore();
