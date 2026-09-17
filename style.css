@@ -233,13 +233,18 @@ main { max-width: 680px; margin: 0 auto; padding: 16px 14px 90px; }
 .hist-actions { display: flex; gap: 6px; }
 
 /* ══ EXERCÍCIOS ══ */
-.add-form { display: flex; gap: 8px; margin-bottom: 16px; }
+.add-form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 .add-form input {
-  flex: 1; padding: 10px 12px; border: 1px solid var(--border);
+  flex: 1 1 100%; padding: 10px 12px; border: 1px solid var(--border);
   border-radius: 10px; background: var(--input-bg); color: var(--text);
   font-size: 0.95rem; font-family: inherit;
 }
-.add-form input:focus { outline: 2px solid var(--primary); border-color: transparent; }
+.add-form select {
+  flex: 1; padding: 10px 8px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--input-bg); color: var(--text);
+  font-size: 0.9rem; font-family: inherit; cursor: pointer;
+}
+.add-form input:focus, .add-form select:focus { outline: 2px solid var(--primary); border-color: transparent; }
 
 .ex-card { cursor: pointer; }
 .ex-head { display: flex; align-items: center; justify-content: space-between; }

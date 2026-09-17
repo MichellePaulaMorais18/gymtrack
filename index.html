@@ -65,6 +65,11 @@
       <h2>Meus exercícios</h2>
       <form class="add-form" onsubmit="addExercise(event)">
         <input type="text" id="new-ex-name" placeholder="Nome do exercício (ex: Supino reto)" required>
+        <select id="new-ex-type" title="Tipo de exercício">
+          <option value="peso">🏋️ Peso × Reps</option>
+          <option value="tempo">⏱️ Tempo (isometria)</option>
+          <option value="cardio">🏃 Cardio (esteira)</option>
+        </select>
         <button type="submit" class="btn-primary">＋</button>
       </form>
       <div id="exercicios-list"></div>
@@ -86,6 +91,11 @@
     <div id="modal-ex-list"></div>
     <form class="add-form" onsubmit="addExerciseFromModal(event)">
       <input type="text" id="modal-ex-name" placeholder="Ou crie um novo...">
+      <select id="modal-ex-type" title="Tipo de exercício">
+        <option value="peso">🏋️ Peso × Reps</option>
+        <option value="tempo">⏱️ Tempo (isometria)</option>
+        <option value="cardio">🏃 Cardio (esteira)</option>
+      </select>
       <button type="submit" class="btn-primary">Criar</button>
     </form>
   </div>

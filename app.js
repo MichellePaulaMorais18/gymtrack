@@ -112,18 +112,70 @@ function esc(s) {
 
 function fmtNum(n) { return Number(n) % 1 === 0 ? String(Number(n)) : String(Number(n)).replace('.', ','); }
 
-// Série = lista de segmentos {w: peso, r: reps}. Drop set/progressão = vários segmentos.
-function fmtSerie(serie) {
-  return serie.map(seg => `${seg.r}× ${fmtNum(seg.w)}kg`).join(' ➜ ');
+/* Tipos de exercício:
+   - peso   → segmentos {w, r}     (carga × repetições — padrão)
+   - tempo  → segmentos {t}        (isometria, em segundos)
+   - cardio → segmentos {t, v, i}  (minutos, km/h, % inclinação)
+   Série = lista de segmentos. Drop set / intervalo = vários segmentos. */
+const EX_TYPES = {
+  peso:   { label: '🏋️ Peso × Reps',      icon: '',    newSeg: () => ({ w: 0, r: 0 }) },
+  tempo:  { label: '⏱️ Tempo (isometria)', icon: '⏱️ ', newSeg: () => ({ t: 0 }) },
+  cardio: { label: '🏃 Cardio (esteira)',  icon: '🏃 ', newSeg: () => ({ t: 0, v: 0, i: 0 }) }
+};
+
+function exType(exId) { const e = getExercise(exId); return (e && e.type) || 'peso'; }
+
+function fmtTime(sec) {
+  sec = Math.round(Number(sec) || 0);
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m ? m + 'min' + (s ? s + 's' : '') : s + 's';
+}
+
+function fmtSerie(serie, type) {
+  return serie.map(seg => {
+    if (type === 'tempo')  return fmtTime(seg.t);
+    if (type === 'cardio') return `${fmtNum(seg.t)}min @ ${fmtNum(seg.v)}km/h${Number(seg.i) ? ' ' + fmtNum(seg.i) + '%' : ''}`;
+    return `${seg.r}× ${fmtNum(seg.w)}kg`;
+  }).join(' ➜ ');
 }
 
 function fmtEntry(entry) {
-  return entry.series.map(fmtSerie).join('  |  ');
+  const type = exType(entry.exId);
+  return entry.series.map(s => fmtSerie(s, type)).join('  |  ');
+}
+
+// Métrica de progressão/recorde por tipo
+function exMetric(type) {
+  if (type === 'tempo') return {
+    label: 'Tempo máx',
+    value: e => Math.max(...e.series.flat().map(seg => Number(seg.t) || 0)),
+    fmt: v => fmtTime(v)
+  };
+  if (type === 'cardio') return {
+    label: 'Distância (km)',
+    value: e => e.series.flat().reduce((t, seg) => t + (Number(seg.v) || 0) * (Number(seg.t) || 0) / 60, 0),
+    fmt: v => fmtNum(Math.round(v * 100) / 100) + ' km'
+  };
+  return {
+    label: 'Carga máx (kg)',
+    value: e => Math.max(...e.series.flat().map(seg => Number(seg.w) || 0)),
+    fmt: v => fmtNum(v) + 'kg'
+  };
 }
 
 function serieVolume(serie) { return serie.reduce((t, seg) => t + (Number(seg.w) * Number(seg.r) || 0), 0); }
 function entryVolume(entry) { return entry.series.reduce((t, s) => t + serieVolume(s), 0); }
 function sessionVolume(session) { return session.entries.reduce((t, e) => t + entryVolume(e), 0); }
+
+// Tempo total (min) dos exercícios de tempo/cardio de uma sessão
+function entryMinutes(entry) {
+  const type = exType(entry.exId);
+  const total = entry.series.flat().reduce((t, seg) => t + (Number(seg.t) || 0), 0);
+  if (type === 'tempo')  return total / 60;
+  if (type === 'cardio') return total;
+  return 0;
+}
+function sessionMinutes(session) { return session.entries.reduce((t, e) => t + entryMinutes(e), 0); }
 
 function getExercise(id) { return cache.exercises.find(e => e.id === id); }
 function exName(id) { const e = getExercise(id); return e ? e.name : '(excluído)'; }
@@ -204,10 +256,13 @@ function renderTreino() {
   }
 
   const totalSeries = session.entries.reduce((t, e) => t + e.series.length, 0);
+  const vol  = sessionVolume(session);
+  const mins = sessionMinutes(session);
   summary.innerHTML = `
     <div class="sum-chip"><b>${session.entries.length}</b><small>exercícios</small></div>
     <div class="sum-chip"><b>${totalSeries}</b><small>séries</small></div>
-    <div class="sum-chip"><b>${fmtNum(sessionVolume(session))} kg</b><small>volume total</small></div>`;
+    ${vol  ? `<div class="sum-chip"><b>${fmtNum(vol)} kg</b><small>volume total</small></div>` : ''}
+    ${mins ? `<div class="sum-chip"><b>${fmtNum(Math.round(mins))} min</b><small>tempo total</small></div>` : ''}`;
 
   wrap.innerHTML = session.entries.map((entry, ei) => {
     const last = lastEntryFor(entry.exId, currentDate);
@@ -217,6 +272,7 @@ function renderTreino() {
         <button class="btn-mini" onclick="repeatLast(${ei})">Repetir</button>
       </div>` : '';
 
+    const type = exType(entry.exId);
     const seriesHtml = entry.series.map((serie, si) => `
       <div class="serie">
         <span class="serie-num">S${si + 1}</span>
@@ -224,17 +280,13 @@ function renderTreino() {
           ${serie.map((seg, gi) => `
             <div class="seg">
               ${gi > 0 ? '<span class="seg-arrow">↘</span>' : ''}
-              <input type="number" inputmode="decimal" step="0.5" min="0" value="${seg.w}"
-                onchange="updSeg(${ei},${si},${gi},'w',this.value)"><span class="unit">kg</span>
-              <span class="unit">×</span>
-              <input type="number" inputmode="numeric" step="1" min="0" value="${seg.r}"
-                onchange="updSeg(${ei},${si},${gi},'r',this.value)"><span class="unit">reps</span>
-              ${serie.length > 1 ? `<button class="btn-tiny danger" title="Remover carga"
+              ${segInputs(type, seg, ei, si, gi)}
+              ${serie.length > 1 ? `<button class="btn-tiny danger" title="Remover trecho"
                 onclick="removeSeg(${ei},${si},${gi})">✕</button>` : ''}
             </div>`).join('')}
         </div>
         <div class="serie-actions">
-          <button class="btn-tiny" title="Adicionar carga na mesma série (drop set)"
+          <button class="btn-tiny" title="${type === 'peso' ? 'Adicionar carga na mesma série (drop set)' : 'Adicionar intervalo na mesma série'}"
             onclick="addSeg(${ei},${si})">＋</button>
           <button class="btn-tiny danger" title="Remover série"
             onclick="removeSerie(${ei},${si})">🗑</button>
@@ -255,6 +307,16 @@ function renderTreino() {
   }).join('');
 }
 
+// Inputs de um segmento conforme o tipo do exercício
+function segInputs(type, seg, ei, si, gi) {
+  const inp = (field, step, unit, mode) => `
+    <input type="number" inputmode="${mode || 'decimal'}" step="${step}" min="0" value="${seg[field] ?? 0}"
+      onchange="updSeg(${ei},${si},${gi},'${field}',this.value)"><span class="unit">${unit}</span>`;
+  if (type === 'tempo')  return inp('t', 5, 'seg', 'numeric');
+  if (type === 'cardio') return inp('t', 1, 'min') + inp('v', 0.5, 'km/h') + inp('i', 0.5, '%&nbsp;incl');
+  return inp('w', 0.5, 'kg') + '<span class="unit">×</span>' + inp('r', 1, 'reps', 'numeric');
+}
+
 function currentEntries() {
   const s = getSession(currentDate);
   return s ? s.entries : [];
@@ -268,8 +330,7 @@ function updSeg(ei, si, gi, field, value) {
 
 function addSeg(ei, si) {
   const serie = currentEntries()[ei].series[si];
-  const lastSeg = serie[serie.length - 1];
-  serie.push({ w: lastSeg.w, r: lastSeg.r });
+  serie.push({ ...serie[serie.length - 1] });
   saveSessions(); renderTreino();
 }
 
@@ -282,15 +343,15 @@ function addSerie(ei) {
   const entry = currentEntries()[ei];
   const lastSerie = entry.series[entry.series.length - 1];
   entry.series.push(lastSerie
-    ? lastSerie.map(seg => ({ w: seg.w, r: seg.r }))
-    : [{ w: 0, r: 0 }]);
+    ? lastSerie.map(seg => ({ ...seg }))
+    : [EX_TYPES[exType(entry.exId)].newSeg()]);
   saveSessions(); renderTreino();
 }
 
 function removeSerie(ei, si) {
   const entry = currentEntries()[ei];
   entry.series.splice(si, 1);
-  if (entry.series.length === 0) entry.series.push([{ w: 0, r: 0 }]);
+  if (entry.series.length === 0) entry.series.push([EX_TYPES[exType(entry.exId)].newSeg()]);
   saveSessions(); renderTreino();
 }
 
@@ -305,7 +366,7 @@ function repeatLast(ei) {
   const entry = currentEntries()[ei];
   const last = lastEntryFor(entry.exId, currentDate);
   if (!last) return;
-  entry.series = last.entry.series.map(serie => serie.map(seg => ({ w: seg.w, r: seg.r })));
+  entry.series = last.entry.series.map(serie => serie.map(seg => ({ ...seg })));
   saveSessions(); renderTreino();
 }
 
@@ -318,7 +379,7 @@ function openExerciseModal() {
   } else {
     list.innerHTML = cache.exercises.map(ex => `
       <button class="ex-pick ${inSession.has(ex.id) ? 'in-session' : ''}"
-        onclick="pickExercise('${ex.id}')">${esc(ex.name)}</button>`).join('');
+        onclick="pickExercise('${ex.id}')">${EX_TYPES[(ex.type || 'peso')].icon}${esc(ex.name)}</button>`).join('');
   }
   document.getElementById('modal-ex-name').value = '';
   document.getElementById('modal-exercise').classList.add('show');
@@ -338,7 +399,7 @@ function addExerciseFromModal(ev) {
   ev.preventDefault();
   const name = document.getElementById('modal-ex-name').value.trim();
   if (!name) return;
-  const ex = { id: uid(), name };
+  const ex = { id: uid(), name, type: document.getElementById('modal-ex-type').value };
   cache.exercises.push(ex);
   saveToCloud('exercises');
   addEntryToSession(ex.id);
@@ -350,8 +411,8 @@ function addEntryToSession(exId) {
   // Pré-preenche com o último treino deste exercício, se existir
   const last = lastEntryFor(exId, currentDate);
   const series = last
-    ? last.entry.series.map(serie => serie.map(seg => ({ w: seg.w, r: seg.r })))
-    : [[{ w: 0, r: 0 }]];
+    ? last.entry.series.map(serie => serie.map(seg => ({ ...seg })))
+    : [[EX_TYPES[exType(exId)].newSeg()]];
   session.entries.push({ exId, series });
   saveSessions(); renderTreino();
 }
@@ -418,10 +479,11 @@ function renderExercicios() {
       .sort((a, b) => a.date.localeCompare(b.date));
     const count = sessions.length;
     const lastDate = count ? fmtDateShort(sessions[count - 1].date) : '—';
-    const maxW = sessions.reduce((m, s) => {
+    const type = ex.type || 'peso';
+    const metric = exMetric(type);
+    const best = sessions.reduce((m, s) => {
       const e = s.entries.find(x => x.exId === ex.id);
-      const w = Math.max(...e.series.flat().map(seg => Number(seg.w) || 0));
-      return Math.max(m, w);
+      return Math.max(m, metric.value(e));
     }, 0);
 
     const expanded = expandedExId === ex.id;
@@ -448,8 +510,8 @@ function renderExercicios() {
       <div class="ex-card" onclick="toggleExercise('${ex.id}')">
         <div class="ex-head">
           <div>
-            <div class="ex-name">${esc(ex.name)}</div>
-            <div class="ex-meta">${count} treino${count === 1 ? '' : 's'} · último: ${lastDate}${maxW ? ` · recorde: ${fmtNum(maxW)}kg` : ''}</div>
+            <div class="ex-name">${EX_TYPES[type].icon}${esc(ex.name)}</div>
+            <div class="ex-meta">${count} treino${count === 1 ? '' : 's'} · último: ${lastDate}${best ? ` · recorde: ${metric.fmt(best)}` : ''}</div>
           </div>
           <span>${expanded ? '▲' : '▼'}</span>
         </div>
@@ -457,17 +519,18 @@ function renderExercicios() {
       </div>`;
   }).join('');
 
-  // Gráfico de progressão (carga máxima por treino)
+  // Gráfico de progressão (métrica conforme o tipo do exercício)
   if (expandedExId) {
     const canvas = document.getElementById('prog-chart');
     if (canvas) {
+      const metric = exMetric(exType(expandedExId));
       const sessions = cache.sessions
         .filter(s => s.entries.some(e => e.exId === expandedExId))
         .sort((a, b) => a.date.localeCompare(b.date));
       const labels = sessions.map(s => fmtDateShort(s.date));
       const data = sessions.map(s => {
         const e = s.entries.find(x => x.exId === expandedExId);
-        return Math.max(...e.series.flat().map(seg => Number(seg.w) || 0));
+        return Math.round(metric.value(e) * 100) / 100;
       });
       if (progChart) progChart.destroy();
       progChart = new Chart(canvas, {
@@ -475,7 +538,7 @@ function renderExercicios() {
         data: {
           labels,
           datasets: [{
-            label: 'Carga máx (kg)',
+            label: metric.label,
             data,
             borderColor: '#ea580c',
             backgroundColor: 'rgba(234,88,12,0.12)',
@@ -504,7 +567,7 @@ function addExercise(ev) {
   const input = document.getElementById('new-ex-name');
   const name = input.value.trim();
   if (!name) return;
-  cache.exercises.push({ id: uid(), name });
+  cache.exercises.push({ id: uid(), name, type: document.getElementById('new-ex-type').value });
   saveToCloud('exercises');
   input.value = '';
   renderExercicios();
