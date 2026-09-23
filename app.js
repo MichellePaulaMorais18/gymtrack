@@ -15,8 +15,11 @@ const db   = firebase.database();
 
 // Cache em memória (fonte de verdade para leituras síncronas)
 let cache = {
-  exercises: [],  // [{id, name}]
-  sessions:  []   // [{id, date:'YYYY-MM-DD', entries:[{exId, series:[[{w,r},...], ...]}]}]
+  exercises: [],  // [{id, name, type}]
+  sessions:  [],  // [{id, date:'YYYY-MM-DD', entries:[{exId, series:[[{w,r},...], ...]}]}]
+  foods:     [],  // [{id, name, portion, kcal, prot, carb, gord, fib}] — valores por porção
+  nutrition: {},  // {'YYYY-MM-DD': {water: ml, meals: [{id, name, items:[{foodId, qty}]}]}}
+  settings:  {}   // {waterGoal: ml}
 };
 let currentUid = null;
 
@@ -59,7 +62,7 @@ auth.onAuthStateChanged(async user => {
     renderAll();
   } else {
     currentUid = null;
-    cache = { exercises: [], sessions: [] };
+    cache = { exercises: [], sessions: [], foods: [], nutrition: {}, settings: {} };
     document.getElementById('app').style.display = 'none';
     document.getElementById('app-loading').classList.remove('show');
     document.getElementById('login-screen').classList.add('show');
@@ -221,18 +224,19 @@ function showTab(tab) {
 function setDate(dateStr) {
   if (!dateStr) return;
   currentDate = dateStr;
-  renderTreino();
+  renderAll();
 }
 
 function shiftDate(days) {
   const d = parseDate(currentDate);
   d.setDate(d.getDate() + days);
   currentDate = toDateStr(d);
-  renderTreino();
+  renderAll();
 }
 
 function renderAll() {
   if (currentTab === 'treino') renderTreino();
+  if (currentTab === 'dieta') renderDieta();
   if (currentTab === 'historico') renderHistorico();
   if (currentTab === 'exercicios') renderExercicios();
 }
@@ -592,6 +596,293 @@ function deleteExercise(id) {
   saveToCloud('exercises');
   if (expandedExId === id) expandedExId = null;
   renderExercicios();
+}
+
+/* ══════════════════════════════════
+   TAB: DIETA — alimentos, refeições e água
+══════════════════════════════════ */
+const MEAL_SUGGESTIONS = ['☕ Café da manhã', '🍽️ Almoço', '🥪 Lanche', '🌙 Jantar', '🍎 Ceia'];
+let foodsOpen = false;
+let pickerMealIdx = null;
+let editingFoodId = null;
+
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+function getFood(id) { return cache.foods.find(f => f.id === id); }
+
+function dayNutri(date) { return cache.nutrition[date]; }
+
+function getOrCreateDay(date) {
+  if (!cache.nutrition[date]) cache.nutrition[date] = { water: 0, meals: [] };
+  const day = cache.nutrition[date];
+  if (!day.meals) day.meals = [];  // RTDB não guarda listas vazias
+  return day;
+}
+
+function currentMeals() {
+  const day = dayNutri(currentDate);
+  return (day && day.meals) ? day.meals : [];
+}
+
+function saveNutrition() {
+  Object.keys(cache.nutrition).forEach(date => {
+    const d = cache.nutrition[date];
+    if (!(Number(d.water) || 0) && !(d.meals && d.meals.length)) delete cache.nutrition[date];
+  });
+  saveToCloud('nutrition');
+}
+
+function waterGoal() { return Number(cache.settings && cache.settings.waterGoal) || 2000; }
+
+// Macros de um item do prato = valores do alimento × quantidade de porções
+function itemMacros(item) {
+  const f = getFood(item.foodId) || {};
+  const q = Number(item.qty) || 0;
+  const v = k => (Number(f[k]) || 0) * q;
+  return { kcal: v('kcal'), prot: v('prot'), carb: v('carb'), gord: v('gord'), fib: v('fib') };
+}
+
+function sumMacros(list) {
+  return list.reduce((t, m) => ({
+    kcal: t.kcal + m.kcal, prot: t.prot + m.prot, carb: t.carb + m.carb,
+    gord: t.gord + m.gord, fib: t.fib + m.fib
+  }), { kcal: 0, prot: 0, carb: 0, gord: 0, fib: 0 });
+}
+
+function mealMacros(meal) { return sumMacros((meal.items || []).map(itemMacros)); }
+function dayMacros(day)   { return sumMacros((day.meals || []).map(mealMacros)); }
+
+function fmtG(n) { return fmtNum(Math.round(Number(n) * 10) / 10); }
+
+function macroLine(m) {
+  return `${fmtG(m.kcal)} kcal · P ${fmtG(m.prot)} · C ${fmtG(m.carb)} · G ${fmtG(m.gord)} · F ${fmtG(m.fib)}`;
+}
+
+function renderDieta() {
+  document.getElementById('dieta-date').value = currentDate;
+  document.getElementById('dieta-date-label').textContent = fmtDateLong(currentDate);
+
+  const day = dayNutri(currentDate) || { water: 0, meals: [] };
+  const meals = day.meals || [];
+
+  // Resumo do dia
+  const summary = document.getElementById('dieta-summary');
+  if (meals.length) {
+    const t = dayMacros(day);
+    summary.innerHTML = `
+      <div class="sum-chip"><b>${fmtG(t.kcal)}</b><small>kcal</small></div>
+      <div class="sum-chip"><b>${fmtG(t.prot)}g</b><small>prot</small></div>
+      <div class="sum-chip"><b>${fmtG(t.carb)}g</b><small>carbo</small></div>
+      <div class="sum-chip"><b>${fmtG(t.gord)}g</b><small>gord</small></div>
+      <div class="sum-chip"><b>${fmtG(t.fib)}g</b><small>fibra</small></div>`;
+  } else summary.innerHTML = '';
+
+  // Hidratação
+  const water = Number(day.water) || 0;
+  const goal = waterGoal();
+  const pct = Math.min(100, Math.round(water / goal * 100));
+  document.getElementById('water-card').innerHTML = `
+    <div class="entry-card">
+      <div class="entry-head">
+        <span class="entry-name">💧 Hidratação</span>
+        <button class="btn-mini" onclick="setWaterGoal()" title="Alterar meta">meta: ${goal}ml</button>
+      </div>
+      <div class="water-bar"><div class="water-fill" style="width:${pct}%"></div></div>
+      <div class="water-row">
+        <b>${water}ml <small class="water-pct">(${pct}%)</small></b>
+        <div class="water-btns">
+          <button class="btn-mini" onclick="addWater(-200)">−200</button>
+          <button class="btn-mini" onclick="addWater(200)">＋200</button>
+          <button class="btn-mini" onclick="addWater(300)">＋300</button>
+          <button class="btn-mini" onclick="addWater(500)">＋500</button>
+        </div>
+      </div>
+    </div>`;
+
+  // Refeições
+  const wrap = document.getElementById('dieta-meals');
+  if (!meals.length) {
+    wrap.innerHTML = `<div class="empty-state"><span class="big">🍽️</span>
+      Nenhuma refeição registrada neste dia.</div>`;
+  } else {
+    wrap.innerHTML = meals.map((meal, mi) => {
+      const items = meal.items || [];
+      const itemsHtml = items.map((item, ii) => {
+        const f = getFood(item.foodId);
+        return `
+          <div class="meal-item">
+            <div class="meal-item-top">
+              <input type="number" step="0.5" min="0" inputmode="decimal" value="${item.qty}"
+                onchange="updQty(${mi},${ii},this.value)">
+              <span class="unit">×</span>
+              <span class="meal-item-name">${f ? esc(f.name) : '(excluído)'}${f && f.portion ? ` <small>${esc(f.portion)}</small>` : ''}</span>
+              <button class="btn-tiny danger" title="Remover do prato" onclick="removeMealItem(${mi},${ii})">✕</button>
+            </div>
+            <div class="meal-item-macros">${macroLine(itemMacros(item))}</div>
+          </div>`;
+      }).join('');
+      const totalHtml = items.length
+        ? `<div class="meal-total">Total: <b>${fmtG(mealMacros(meal).kcal)} kcal</b> · ${macroLine(mealMacros(meal)).split(' · ').slice(1).join(' · ')}</div>`
+        : '<p class="meal-empty">Prato vazio — adicione alimentos.</p>';
+      return `
+        <div class="entry-card">
+          <div class="entry-head">
+            <span class="entry-name">${esc(meal.name)}</span>
+            <button class="btn-del" title="Remover refeição" onclick="removeMeal(${mi})">🗑</button>
+          </div>
+          ${itemsHtml}
+          ${totalHtml}
+          <button class="btn-add-serie" onclick="openFoodPicker(${mi})">＋ Alimento</button>
+        </div>`;
+    }).join('');
+  }
+
+  // Meus alimentos
+  const foods = cache.foods;
+  let foodsHtml = '';
+  if (foodsOpen) {
+    foodsHtml = foods.map(f => `
+      <div class="food-row">
+        <div class="food-row-info">
+          <b>${esc(f.name)}</b> <small>${esc(f.portion || '')}</small>
+          <div class="meal-item-macros">${macroLine(f)}</div>
+        </div>
+        <button class="btn-tiny" title="Editar" onclick="openFoodForm('${f.id}')">✏️</button>
+        <button class="btn-tiny danger" title="Excluir" onclick="deleteFood('${f.id}')">🗑</button>
+      </div>`).join('') || '<p class="meal-empty">Nenhum alimento cadastrado ainda.</p>';
+    foodsHtml += `<button class="btn-add-serie" onclick="pickerMealIdx=null;openFoodForm(null)">＋ Novo alimento</button>`;
+  }
+  document.getElementById('foods-section').innerHTML = `
+    <div class="foods-toggle" onclick="toggleFoods()">🥗 Meus alimentos (${foods.length}) ${foodsOpen ? '▲' : '▼'}</div>
+    ${foodsHtml}`;
+}
+
+function toggleFoods() { foodsOpen = !foodsOpen; renderDieta(); }
+
+/* ── Água ── */
+function addWater(ml) {
+  const day = getOrCreateDay(currentDate);
+  day.water = Math.max(0, (Number(day.water) || 0) + ml);
+  saveNutrition(); renderDieta();
+}
+
+function setWaterGoal() {
+  const v = parseInt(prompt('Meta diária de água (ml):', waterGoal()));
+  if (!v || v <= 0) return;
+  if (!cache.settings) cache.settings = {};
+  cache.settings.waterGoal = v;
+  saveToCloud('settings');
+  renderDieta();
+}
+
+/* ── Refeições ── */
+function openMealModal() {
+  document.getElementById('modal-meal-list').innerHTML = MEAL_SUGGESTIONS.map(n =>
+    `<button class="ex-pick" onclick="addMeal('${n}')">${n}</button>`).join('');
+  document.getElementById('modal-meal-name').value = '';
+  document.getElementById('modal-meal').classList.add('show');
+}
+
+function addMeal(name) {
+  getOrCreateDay(currentDate).meals.push({ id: uid(), name, items: [] });
+  saveNutrition(); closeModal('modal-meal'); renderDieta();
+}
+
+function addMealCustom(ev) {
+  ev.preventDefault();
+  const name = document.getElementById('modal-meal-name').value.trim();
+  if (!name) return;
+  addMeal(name);
+}
+
+function removeMeal(mi) {
+  const meal = currentMeals()[mi];
+  if (!confirm(`Remover "${meal.name}" deste dia?`)) return;
+  currentMeals().splice(mi, 1);
+  saveNutrition(); renderDieta();
+}
+
+/* ── Itens do prato ── */
+function openFoodPicker(mi) {
+  pickerMealIdx = mi;
+  const list = document.getElementById('modal-food-list');
+  list.innerHTML = cache.foods.length
+    ? cache.foods.map(f => `
+        <button class="ex-pick" onclick="pickFood('${f.id}')">${esc(f.name)} <small>${fmtG(f.kcal || 0)}kcal</small></button>`).join('')
+    : '<p style="color:var(--muted);font-size:0.85rem;margin-bottom:8px">Nenhum alimento cadastrado — crie o primeiro abaixo.</p>';
+  document.getElementById('modal-food-picker').classList.add('show');
+}
+
+function pickFood(foodId) {
+  const meal = currentMeals()[pickerMealIdx];
+  if (!meal) return;
+  if (!meal.items) meal.items = [];
+  meal.items.push({ foodId, qty: 1 });
+  saveNutrition(); closeModal('modal-food-picker'); renderDieta();
+}
+
+function updQty(mi, ii, value) {
+  currentMeals()[mi].items[ii].qty = parseFloat(String(value).replace(',', '.')) || 0;
+  saveNutrition(); renderDieta();
+}
+
+function removeMealItem(mi, ii) {
+  currentMeals()[mi].items.splice(ii, 1);
+  saveNutrition(); renderDieta();
+}
+
+/* ── Cadastro de alimentos ── */
+function openFoodForm(foodId) {
+  editingFoodId = foodId;
+  const f = foodId ? getFood(foodId) : null;
+  document.getElementById('food-form-title').textContent = f ? 'Editar alimento' : 'Novo alimento';
+  document.getElementById('ff-name').value = f ? f.name : '';
+  document.getElementById('ff-portion').value = f ? (f.portion || '') : '';
+  ['kcal', 'prot', 'carb', 'gord', 'fib'].forEach(k => {
+    document.getElementById('ff-' + k).value = f ? (f[k] || 0) : '';
+  });
+  closeModal('modal-food-picker');
+  document.getElementById('modal-food-form').classList.add('show');
+}
+
+function saveFoodForm(ev) {
+  ev.preventDefault();
+  const num = id => parseFloat(String(document.getElementById(id).value).replace(',', '.')) || 0;
+  const data = {
+    name: document.getElementById('ff-name').value.trim(),
+    portion: document.getElementById('ff-portion').value.trim(),
+    kcal: num('ff-kcal'), prot: num('ff-prot'), carb: num('ff-carb'),
+    gord: num('ff-gord'), fib: num('ff-fib')
+  };
+  if (!data.name) return;
+  if (editingFoodId) {
+    Object.assign(getFood(editingFoodId), data);
+  } else {
+    const food = { id: uid(), ...data };
+    cache.foods.push(food);
+    // Se veio do picker de uma refeição, já adiciona ao prato
+    if (pickerMealIdx !== null && currentMeals()[pickerMealIdx]) {
+      const meal = currentMeals()[pickerMealIdx];
+      if (!meal.items) meal.items = [];
+      meal.items.push({ foodId: food.id, qty: 1 });
+      saveNutrition();
+    }
+  }
+  saveToCloud('foods');
+  closeModal('modal-food-form');
+  renderDieta();
+}
+
+function deleteFood(id) {
+  const used = Object.values(cache.nutrition).some(d =>
+    (d.meals || []).some(m => (m.items || []).some(it => it.foodId === id)));
+  const msg = used
+    ? 'Este alimento aparece em refeições registradas. Excluir mesmo assim? (os pratos antigos mostrarão "(excluído)")'
+    : 'Excluir este alimento?';
+  if (!confirm(msg)) return;
+  cache.foods = cache.foods.filter(f => f.id !== id);
+  saveToCloud('foods');
+  renderDieta();
 }
 
 /* ══════════════════════════════════

@@ -54,6 +54,23 @@
       <button class="btn-primary btn-block" onclick="openExerciseModal()">＋ Adicionar exercício</button>
     </section>
 
+    <!-- ── TAB: DIETA ── -->
+    <section id="tab-dieta" class="tab" style="display:none">
+      <div class="date-bar">
+        <button class="btn-icon" onclick="shiftDate(-1)">◀</button>
+        <div class="date-center">
+          <input type="date" id="dieta-date" onchange="setDate(this.value)">
+          <span id="dieta-date-label"></span>
+        </div>
+        <button class="btn-icon" onclick="shiftDate(1)">▶</button>
+      </div>
+      <div id="dieta-summary"></div>
+      <div id="water-card"></div>
+      <div id="dieta-meals"></div>
+      <button class="btn-primary btn-block" onclick="openMealModal()">＋ Adicionar refeição</button>
+      <div id="foods-section"></div>
+    </section>
+
     <!-- ── TAB: HISTÓRICO ── -->
     <section id="tab-historico" class="tab" style="display:none">
       <h2>Histórico de treinos</h2>
@@ -78,6 +95,7 @@
 
   <nav id="bottom-nav">
     <button class="nav-btn active" data-tab="treino" onclick="showTab('treino')"><span>🏋️</span>Treino</button>
+    <button class="nav-btn" data-tab="dieta" onclick="showTab('dieta')"><span>🍽️</span>Dieta</button>
     <button class="nav-btn" data-tab="historico" onclick="showTab('historico')"><span>📅</span>Histórico</button>
     <button class="nav-btn" data-tab="exercicios" onclick="showTab('exercicios')"><span>📋</span>Exercícios</button>
   </nav>
@@ -97,6 +115,50 @@
         <option value="cardio">🏃 Cardio (esteira)</option>
       </select>
       <button type="submit" class="btn-primary">Criar</button>
+    </form>
+  </div>
+</div>
+
+<!-- ══ MODAL: adicionar refeição ══ -->
+<div id="modal-meal" class="modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal('modal-meal')">✕</button>
+    <h3>Adicionar refeição</h3>
+    <div id="modal-meal-list" class="pick-list"></div>
+    <form class="add-form" onsubmit="addMealCustom(event)">
+      <input type="text" id="modal-meal-name" placeholder="Ou um nome personalizado...">
+      <button type="submit" class="btn-primary">Criar</button>
+    </form>
+  </div>
+</div>
+
+<!-- ══ MODAL: escolher alimento ══ -->
+<div id="modal-food-picker" class="modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal('modal-food-picker')">✕</button>
+    <h3>Adicionar alimento ao prato</h3>
+    <div id="modal-food-list" class="pick-list"></div>
+    <button class="btn-primary btn-block" onclick="openFoodForm(null)">＋ Novo alimento</button>
+  </div>
+</div>
+
+<!-- ══ MODAL: cadastro de alimento ══ -->
+<div id="modal-food-form" class="modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal('modal-food-form')">✕</button>
+    <h3 id="food-form-title">Novo alimento</h3>
+    <form onsubmit="saveFoodForm(event)">
+      <div class="food-grid">
+        <label>Nome<input type="text" id="ff-name" placeholder="Ex: Frango grelhado" required></label>
+        <label>Porção<input type="text" id="ff-portion" placeholder="Ex: 100g ou 1 unidade" required></label>
+        <label>Calorias (kcal)<input type="number" id="ff-kcal" step="any" min="0" inputmode="decimal"></label>
+        <label>Proteínas (g)<input type="number" id="ff-prot" step="any" min="0" inputmode="decimal"></label>
+        <label>Carboidratos (g)<input type="number" id="ff-carb" step="any" min="0" inputmode="decimal"></label>
+        <label>Gorduras (g)<input type="number" id="ff-gord" step="any" min="0" inputmode="decimal"></label>
+        <label>Fibras (g)<input type="number" id="ff-fib" step="any" min="0" inputmode="decimal"></label>
+      </div>
+      <p class="food-hint">Valores referentes a 1 porção. No prato você escolhe quantas porções (pode ser 0,5 / 1,5...).</p>
+      <button type="submit" class="btn-primary btn-block">Salvar</button>
     </form>
   </div>
 </div>

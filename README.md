@@ -9,6 +9,9 @@ Tracker de academia: registre pesos e repetições de cada treino e acompanhe su
 - **"Repetir último"** — ao adicionar um exercício, já vem preenchido com o último treino dele
 - **Histórico** — todos os treinos por data, com volume total
 - **Progressão** — gráfico de carga máxima por treino em cada exercício
+- **Tipos de exercício** — peso × reps, tempo (isometria) e cardio (tempo, velocidade, inclinação)
+- **Dieta** — cadastro de alimentos com calorias e macros por porção; monte o prato de cada refeição e veja a soma por refeição e do dia
+- **Hidratação** — registro de água com meta diária
 - Login com Google + dados na nuvem (Realtime Database) — funciona em qualquer dispositivo
 
 ## Configuração do Firebase
