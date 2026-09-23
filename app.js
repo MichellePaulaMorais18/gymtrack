@@ -17,7 +17,7 @@ const db   = firebase.database();
 let cache = {
   exercises: [],  // [{id, name, type}]
   sessions:  [],  // [{id, date:'YYYY-MM-DD', entries:[{exId, series:[[{w,r},...], ...]}]}]
-  foods:     [],  // [{id, name, portion, kcal, prot, carb, gord, fib}] — valores por porção
+  foods:     [],  // [{id, name, portion, kcal, prot, carb, gord, fib, acuc, sodio}] — valores por porção
   nutrition: {},  // {'YYYY-MM-DD': {water: ml, meals: [{id, name, items:[{foodId, qty}]}]}}
   settings:  {}   // {waterGoal: ml}
 };
@@ -634,19 +634,32 @@ function saveNutrition() {
 
 function waterGoal() { return Number(cache.settings && cache.settings.waterGoal) || 2000; }
 
+// Nutrientes guardados por porção de alimento.
+// abbr/suffix = linha compacta ("P 31 · Na 70mg"); unit/chip = resumo do dia
+const NUTRIENTS = [
+  { k: 'kcal',  abbr: '',      suffix: ' kcal', unit: '',   chip: 'kcal'   },
+  { k: 'prot',  abbr: 'P ',    suffix: '',      unit: 'g',  chip: 'prot'   },
+  { k: 'carb',  abbr: 'C ',    suffix: '',      unit: 'g',  chip: 'carbo'  },
+  { k: 'gord',  abbr: 'G ',    suffix: '',      unit: 'g',  chip: 'gord'   },
+  { k: 'fib',   abbr: 'F ',    suffix: '',      unit: 'g',  chip: 'fibra'  },
+  { k: 'acuc',  abbr: 'Açúc ', suffix: '',      unit: 'g',  chip: 'açúcar' },
+  { k: 'sodio', abbr: 'Na ',   suffix: 'mg',    unit: 'mg', chip: 'sódio'  }
+];
+
+function zeroMacros() { return Object.fromEntries(NUTRIENTS.map(n => [n.k, 0])); }
+
 // Macros de um item do prato = valores do alimento × quantidade de porções
 function itemMacros(item) {
   const f = getFood(item.foodId) || {};
   const q = Number(item.qty) || 0;
-  const v = k => (Number(f[k]) || 0) * q;
-  return { kcal: v('kcal'), prot: v('prot'), carb: v('carb'), gord: v('gord'), fib: v('fib') };
+  return Object.fromEntries(NUTRIENTS.map(n => [n.k, (Number(f[n.k]) || 0) * q]));
 }
 
 function sumMacros(list) {
-  return list.reduce((t, m) => ({
-    kcal: t.kcal + m.kcal, prot: t.prot + m.prot, carb: t.carb + m.carb,
-    gord: t.gord + m.gord, fib: t.fib + m.fib
-  }), { kcal: 0, prot: 0, carb: 0, gord: 0, fib: 0 });
+  return list.reduce((t, m) => {
+    NUTRIENTS.forEach(n => t[n.k] += Number(m[n.k]) || 0);
+    return t;
+  }, zeroMacros());
 }
 
 function mealMacros(meal) { return sumMacros((meal.items || []).map(itemMacros)); }
@@ -654,8 +667,10 @@ function dayMacros(day)   { return sumMacros((day.meals || []).map(mealMacros));
 
 function fmtG(n) { return fmtNum(Math.round(Number(n) * 10) / 10); }
 
-function macroLine(m) {
-  return `${fmtG(m.kcal)} kcal · P ${fmtG(m.prot)} · C ${fmtG(m.carb)} · G ${fmtG(m.gord)} · F ${fmtG(m.fib)}`;
+function macroLine(m, skipKcal) {
+  return NUTRIENTS.filter(n => !(skipKcal && n.k === 'kcal'))
+    .map(n => `${n.abbr}${fmtG(Number(m[n.k]) || 0)}${n.suffix}`)
+    .join(' · ');
 }
 
 function renderDieta() {
@@ -669,12 +684,8 @@ function renderDieta() {
   const summary = document.getElementById('dieta-summary');
   if (meals.length) {
     const t = dayMacros(day);
-    summary.innerHTML = `
-      <div class="sum-chip"><b>${fmtG(t.kcal)}</b><small>kcal</small></div>
-      <div class="sum-chip"><b>${fmtG(t.prot)}g</b><small>prot</small></div>
-      <div class="sum-chip"><b>${fmtG(t.carb)}g</b><small>carbo</small></div>
-      <div class="sum-chip"><b>${fmtG(t.gord)}g</b><small>gord</small></div>
-      <div class="sum-chip"><b>${fmtG(t.fib)}g</b><small>fibra</small></div>`;
+    summary.innerHTML = NUTRIENTS.map(n => `
+      <div class="sum-chip"><b>${fmtG(t[n.k])}${n.unit}</b><small>${n.chip}</small></div>`).join('');
   } else summary.innerHTML = '';
 
   // Hidratação
@@ -722,7 +733,7 @@ function renderDieta() {
           </div>`;
       }).join('');
       const totalHtml = items.length
-        ? `<div class="meal-total">Total: <b>${fmtG(mealMacros(meal).kcal)} kcal</b> · ${macroLine(mealMacros(meal)).split(' · ').slice(1).join(' · ')}</div>`
+        ? `<div class="meal-total">Total: <b>${fmtG(mealMacros(meal).kcal)} kcal</b> · ${macroLine(mealMacros(meal), true)}</div>`
         : '<p class="meal-empty">Prato vazio — adicione alimentos.</p>';
       return `
         <div class="entry-card">
@@ -838,8 +849,8 @@ function openFoodForm(foodId) {
   document.getElementById('food-form-title').textContent = f ? 'Editar alimento' : 'Novo alimento';
   document.getElementById('ff-name').value = f ? f.name : '';
   document.getElementById('ff-portion').value = f ? (f.portion || '') : '';
-  ['kcal', 'prot', 'carb', 'gord', 'fib'].forEach(k => {
-    document.getElementById('ff-' + k).value = f ? (f[k] || 0) : '';
+  NUTRIENTS.forEach(n => {
+    document.getElementById('ff-' + n.k).value = f ? (f[n.k] || 0) : '';
   });
   closeModal('modal-food-picker');
   document.getElementById('modal-food-form').classList.add('show');
@@ -851,8 +862,7 @@ function saveFoodForm(ev) {
   const data = {
     name: document.getElementById('ff-name').value.trim(),
     portion: document.getElementById('ff-portion').value.trim(),
-    kcal: num('ff-kcal'), prot: num('ff-prot'), carb: num('ff-carb'),
-    gord: num('ff-gord'), fib: num('ff-fib')
+    ...Object.fromEntries(NUTRIENTS.map(n => [n.k, num('ff-' + n.k)]))
   };
   if (!data.name) return;
   if (editingFoodId) {

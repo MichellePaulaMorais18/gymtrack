@@ -255,7 +255,7 @@ main { max-width: 680px; margin: 0 auto; padding: 16px 14px 90px; }
 .ex-stats { display: flex; gap: 10px; margin-bottom: 12px; }
 
 /* ══ DIETA ══ */
-#dieta-summary { display: flex; gap: 6px; margin-bottom: 14px; }
+#dieta-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 14px; }
 #dieta-summary .sum-chip { padding: 8px 4px; }
 #dieta-summary .sum-chip b { font-size: 0.92rem; }
 
