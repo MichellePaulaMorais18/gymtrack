@@ -1189,7 +1189,7 @@ function periodDates(endDate, days) {
 function fmtKcal(n) { return Math.round(n).toLocaleString('pt-BR'); }
 function fmtSigned(n, dec) {
   const v = dec ? Math.round(n * 10 ** dec) / 10 ** dec : Math.round(n);
-  return (v > 0 ? '+' : v < 0 ? '−' : '') + fmtNum(Math.abs(v));
+  return (v > 0 ? '+' : v < 0 ? '−' : '') + (dec ? fmtNum(Math.abs(v)) : Math.abs(v).toLocaleString('pt-BR'));
 }
 
 function renderBalanco() {
@@ -1212,8 +1212,10 @@ function renderBalanco() {
     return;
   }
 
+  balMemo = new Map();
   wrap.innerHTML = weightCardHtml() + dayCardHtml() + trendCardHtml() + profileCardHtml(profileOpen);
   drawBalChart();
+  balMemo = null;
 }
 
 /* ── Card: peso do dia ── */
@@ -1281,16 +1283,73 @@ function dayCardHtml() {
 }
 
 /* ── Card: tendência do período ── */
-function periodStats() {
+const MONTHS = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+                'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+const MONTHS_SHORT = MONTHS.map(m => m.slice(0, 3));
+
+let balMemo = null;   // cache de dayBalance durante um render (o modo Ano calcula centenas de dias)
+let lastTrend = null; // estatísticas do último render, reaproveitadas pelo gráfico
+
+function dayBalanceMemo(d) {
+  if (!balMemo) return dayBalance(d);
+  if (!balMemo.has(d)) balMemo.set(d, dayBalance(d));
+  return balMemo.get(d);
+}
+
+function monthDates(y, m) {
+  const out = [];
+  const d = new Date(y, m, 1);
+  while (d.getMonth() === m) { out.push(toDateStr(d)); d.setDate(d.getDate() + 1); }
+  return out;
+}
+
+function capToday(dates) { const t = toDateStr(new Date()); return dates.filter(d => d <= t); }
+
+// Intervalo atual + intervalo anterior (para comparar), conforme o modo escolhido
+function periodRange() {
+  const cd = parseDate(currentDate);
+  const y = cd.getFullYear(), m = cd.getMonth();
+  if (balPeriod === 'mes') {
+    const py = m ? y : y - 1, pm = m ? m - 1 : 11;
+    return { dates: capToday(monthDates(y, m)), prev: capToday(monthDates(py, pm)),
+             label: `${MONTHS[m]} de ${y}`, prevName: 'mês anterior',
+             colPrev: `${MONTHS_SHORT[pm]}/${String(py).slice(2)}`, colNow: `${MONTHS_SHORT[m]}/${String(y).slice(2)}`, nav: true };
+  }
+  if (balPeriod === 'ano') {
+    const yearDates = yy => Array.from({ length: 12 }, (_, mm) => monthDates(yy, mm)).flat();
+    return { dates: capToday(yearDates(y)), prev: capToday(yearDates(y - 1)),
+             label: String(y), prevName: 'ano anterior', colPrev: String(y - 1), colNow: String(y), nav: true };
+  }
   const dates = periodDates(currentDate, balPeriod);
-  const days = dates.map(d => ({ date: d, b: dayBalance(d) }));
+  const before = parseDate(dates[0]);
+  before.setDate(before.getDate() - 1);
+  return { dates, prev: periodDates(toDateStr(before), balPeriod),
+           label: `Últimos ${balPeriod} dias`, prevName: `${balPeriod} dias anteriores`,
+           colPrev: 'Antes', colNow: 'Agora', nav: false };
+}
+
+function shiftPeriod(dir) {
+  const d = parseDate(currentDate);
+  const day = d.getDate();
+  d.setDate(1);
+  if (balPeriod === 'mes') d.setMonth(d.getMonth() + dir);
+  else d.setFullYear(d.getFullYear() + dir);
+  d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+  currentDate = toDateStr(d);
+  renderBalanco();
+}
+
+function periodStats(dates) {
+  const days = dates.map(d => ({ date: d, b: dayBalanceMemo(d) }));
   const logged = days.filter(x => x.b && x.b.logged);
   const n = logged.length;
   const avg = f => n ? logged.reduce((t, x) => t + f(x.b), 0) / n : 0;
-  const kgNow = weightOn(currentDate).w;
+  const end = dates.length ? dates[dates.length - 1] : currentDate;
+  const kgNow = (weightOn(end) || { w: 1 }).w;
 
   // Pesagens reais dentro do período
-  const wDates = Object.keys(cache.weights || {}).filter(d => d >= dates[0] && d <= currentDate).sort();
+  const wDates = dates.length
+    ? Object.keys(cache.weights || {}).filter(d => d >= dates[0] && d <= end).sort() : [];
   const firstW = wDates.length ? { date: wDates[0], ...cache.weights[wDates[0]] } : null;
   const lastW  = wDates.length ? { date: wDates[wDates.length - 1], ...cache.weights[wDates[wDates.length - 1]] } : null;
 
@@ -1321,15 +1380,28 @@ function periodStats() {
 }
 
 function trendCardHtml() {
-  const s = periodStats();
-  const tabs = [7, 14, 30].map(p =>
-    `<button class="period-btn ${balPeriod === p ? 'active' : ''}" onclick="setBalPeriod(${p})">${p} dias</button>`).join('');
+  const range = periodRange();
+  const s = periodStats(range.dates);
+  const p = periodStats(range.prev);
+  lastTrend = { s, range };
+
+  const tabs = [[7, '7 dias'], [30, '30 dias'], ['mes', 'Mês'], ['ano', 'Ano']].map(([v, l]) =>
+    `<button class="period-btn ${balPeriod === v ? 'active' : ''}" onclick="setBalPeriod(${typeof v === 'string' ? `'${v}'` : v})">${l}</button>`).join('');
+  const head = `
+    <div class="entry-head"><span class="entry-name">📈 Tendência</span></div>
+    <div class="period-tabs full">${tabs}</div>
+    ${range.nav ? `
+      <div class="period-nav">
+        <button class="btn-icon" onclick="shiftPeriod(-1)">◀</button>
+        <b>${range.label}</b>
+        <button class="btn-icon" onclick="shiftPeriod(1)">▶</button>
+      </div>` : ''}`;
 
   if (s.n === 0) {
     return `
       <div class="entry-card">
-        <div class="entry-head"><span class="entry-name">📈 Tendência</span><div class="period-tabs">${tabs}</div></div>
-        <div class="bal-note">Nenhum dia com alimentação registrada nesse período.</div>
+        ${head}
+        <div class="bal-note">${range.dates.length ? 'Nenhum dia com alimentação registrada nesse período.' : 'Esse período ainda não começou.'}</div>
       </div>`;
   }
 
@@ -1346,25 +1418,77 @@ function trendCardHtml() {
 
   return `
     <div class="entry-card">
-      <div class="entry-head"><span class="entry-name">📈 Tendência</span><div class="period-tabs">${tabs}</div></div>
-      <div class="bal-sub">${s.n} de ${balPeriod} dias com alimentação registrada · ${s.trainedDays} dias de treino</div>
+      ${head}
+      <div class="bal-sub">${s.n} de ${s.dates.length} dias com alimentação registrada · ${s.trainedDays} dias de treino</div>
       ${chips}
       <canvas id="bal-chart"></canvas>
+      ${balPeriod === 'ano' ? monthTableHtml(s.dates) : ''}
+      ${compareHtml(s, p, range)}
       <div class="bal-insights">${insights(s).map(t => `<p>${t}</p>`).join('')}</div>
     </div>`;
 }
 
 function setBalPeriod(p) { balPeriod = p; renderBalanco(); }
 
+// Tabela: este período × o anterior (médias por dia, então meses/anos incompletos comparam de forma justa)
+function compareHtml(s, p, range) {
+  if (!p.n) return `<p class="bal-sub cmp-empty">📅 Sem alimentação registrada no ${range.prevName} para comparar.</p>`;
+  const perWeek = x => x.dates.length ? x.trainedDays / x.dates.length * 7 : 0;
+  const rows = [
+    ['Ingerido (kcal/dia)', p.avgIn, s.avgIn, v => fmtKcal(v), 0],
+    ['Gasto (kcal/dia)', p.avgOut, s.avgOut, v => fmtKcal(v), 0],
+    ['Saldo (kcal/dia)', p.avgSaldo, s.avgSaldo, v => fmtSigned(v), 0],
+    ['Proteína (g/kg)', p.protKg, s.protKg, v => fmtNum(Math.round(v * 10) / 10), 1],
+    ['Treinos/semana', perWeek(p), perWeek(s), v => fmtNum(Math.round(v * 10) / 10), 1],
+    ['Peso (últ. pesagem)', p.lastW ? p.lastW.w : null, s.lastW ? s.lastW.w : null, v => fmtNum(v) + 'kg', 1]
+  ];
+  return `
+    <p class="cmp-title">📅 Comparado ao ${range.prevName}</p>
+    <div class="table-wrap">
+      <table class="cmp-table">
+        <thead><tr><th></th><th>${range.colPrev}</th><th>${range.colNow}</th><th>Δ</th></tr></thead>
+        <tbody>${rows.map(([name, a, b, fmt, dec]) => `
+          <tr><td>${name}</td>
+            <td>${a !== null ? fmt(a) : '—'}</td>
+            <td><b>${b !== null ? fmt(b) : '—'}</b></td>
+            <td class="cmp-delta">${a !== null && b !== null ? fmtSigned(b - a, dec) : '—'}</td></tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+// Modo Ano: uma linha por mês
+function monthTableHtml(dates) {
+  const byMonth = {};
+  dates.forEach(d => (byMonth[d.slice(0, 7)] = byMonth[d.slice(0, 7)] || []).push(d));
+  const rows = Object.keys(byMonth).sort().map(k => {
+    const ms = periodStats(byMonth[k]);
+    const name = MONTHS_SHORT[Number(k.slice(5, 7)) - 1];
+    if (!ms.n) return `<tr class="muted-row"><td>${name}</td><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`;
+    const cls = ms.avgSaldo < -100 ? 'deficit' : ms.avgSaldo > 100 ? 'superavit' : '';
+    return `<tr><td>${name}</td><td>${ms.n}</td><td>${fmtKcal(ms.avgIn)}</td><td>${fmtKcal(ms.avgOut)}</td>
+      <td class="${cls}"><b>${fmtSigned(ms.avgSaldo)}</b></td>
+      <td>${ms.realDelta !== null ? fmtSigned(ms.realDelta, 1) + 'kg' : '—'}</td></tr>`;
+  }).join('');
+  return `
+    <p class="cmp-title">🗓️ Mês a mês <small>(médias por dia registrado)</small></p>
+    <div class="table-wrap">
+      <table class="cmp-table month-table">
+        <thead><tr><th>Mês</th><th>Dias</th><th>Ingerido</th><th>Gasto</th><th>Saldo</th><th>Balança</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 // Interpretação: déficit/superávit × proteína × treino (+ composição se houver % gordura)
 function insights(s) {
   const out = [];
   const protOk = s.protKg >= 1.6;
-  const treinaBem = s.trainedDays >= Math.max(1, Math.round(balPeriod / 7 * 2));
+  const treinaBem = s.trainedDays >= Math.max(1, Math.round(s.dates.length / 7 * 2));
   const protTxt = `${fmtNum(Math.round(s.protKg * 10) / 10)} g/kg`;
 
   if (s.n < 3) out.push('📝 Poucos dias registrados — a tendência fica mais confiável com pelo menos 5–7 dias de alimentação anotada.');
-  const faltam = balPeriod - s.n;
+  const faltam = s.dates.length - s.n;
   if (faltam === 1) out.push('ℹ️ 1 dia sem refeições registradas ficou de fora do cálculo (não dá para supor quanto você comeu).');
   else if (faltam > 1) out.push(`ℹ️ ${faltam} dias sem refeições registradas ficaram de fora do cálculo (não dá para supor quanto você comeu).`);
 
@@ -1404,23 +1528,37 @@ function insights(s) {
 function drawBalChart() {
   const canvas = document.getElementById('bal-chart');
   if (balChart) { balChart.destroy(); balChart = null; }
-  if (!canvas) return;
-  const s = periodStats();
+  if (!canvas || !lastTrend) return;
+  const s = lastTrend.s;
   const base = weightOn(s.dates[0]);
   let cum = 0;
   const pred = s.days.map(x => {
     if (x.b && x.b.logged && x.date > base.date) cum += x.b.saldo;
     return Math.round((Number(base.w) + cum / KCAL_PER_KG) * 100) / 100;
   });
-  const real = s.dates.map(d => cache.weights[d] ? Number(cache.weights[d].w) : null);
+  let labels = s.dates.map(fmtDateShort);
+  let real = s.dates.map(d => cache.weights[d] ? Number(cache.weights[d].w) : null);
+  let predData = pred;
+
+  // Modo Ano: um ponto por mês (última pesagem do mês; simulação no fim do mês)
+  if (balPeriod === 'ano') {
+    const months = [...new Set(s.dates.map(d => d.slice(0, 7)))];
+    labels = months.map(k => MONTHS_SHORT[Number(k.slice(5, 7)) - 1]);
+    real = months.map(k => {
+      const ws = Object.keys(cache.weights).filter(d => d.startsWith(k)).sort();
+      return ws.length ? Number(cache.weights[ws[ws.length - 1]].w) : null;
+    });
+    predData = months.map(k => pred[s.dates.map(d => d.slice(0, 7)).lastIndexOf(k)]);
+  }
+
   balChart = new Chart(canvas, {
     type: 'line',
     data: {
-      labels: s.dates.map(fmtDateShort),
+      labels,
       datasets: [
         { label: 'Balança', data: real, borderColor: '#ea580c', backgroundColor: '#ea580c',
           spanGaps: true, pointRadius: 4, tension: 0.2 },
-        { label: 'Simulação', data: pred, borderColor: '#94a3b8', borderDash: [5, 4],
+        { label: 'Simulação', data: predData, borderColor: '#94a3b8', borderDash: [5, 4],
           pointRadius: 0, tension: 0.2 }
       ]
     },

@@ -402,6 +402,29 @@ body.dark .btn-mini.danger-mini { background: rgba(239,68,68,0.15); }
   cursor: pointer; font-family: inherit;
 }
 .period-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.period-tabs.full { margin: 4px 0 8px; }
+.period-tabs.full .period-btn { flex: 1; padding: 7px 4px; font-size: 0.8rem; }
+.period-nav {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px; font-size: 0.95rem;
+}
+.period-nav .btn-icon { background: var(--bg); width: 32px; height: 32px; }
+
+.cmp-title { font-weight: 700; font-size: 0.9rem; margin: 14px 0 6px; }
+.cmp-title small { color: var(--muted); font-weight: 400; font-size: 0.75rem; }
+.cmp-empty { margin-top: 12px; }
+.table-wrap { overflow-x: auto; margin-bottom: 6px; }
+.cmp-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.cmp-table th {
+  text-align: right; color: var(--muted); font-weight: 700; font-size: 0.72rem;
+  padding: 5px 6px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.cmp-table td { text-align: right; padding: 6px; border-bottom: 1px dashed var(--border); white-space: nowrap; }
+.cmp-table th:first-child, .cmp-table td:first-child { text-align: left; white-space: normal; }
+.cmp-table tr:last-child td { border-bottom: none; }
+.cmp-delta { color: var(--muted); }
+.cmp-table .muted-row td { color: var(--muted); opacity: 0.6; }
+.month-table td:first-child { font-weight: 700; }
 
 .weight-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-top: 6px; }
 .weight-row label {
