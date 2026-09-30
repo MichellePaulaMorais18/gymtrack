@@ -19,7 +19,9 @@ let cache = {
   sessions:  [],  // [{id, date:'YYYY-MM-DD', entries:[{exId, series:[[{w,r},...], ...]}]}]
   foods:     [],  // [{id, name, portion, kcal, prot, carb, gord, fib, acuc, sodio}] — valores por porção
   nutrition: {},  // {'YYYY-MM-DD': {water: ml, meals: [{id, name, items:[{foodId, qty}]}]}}
-  settings:  {}   // {waterGoal: ml}
+  settings:  {},  // {waterGoal: ml}
+  profile:   {},  // {sex:'F'|'M', birthYear, height (cm), activity (fator do dia a dia)}
+  weights:   {}   // {'YYYY-MM-DD': {w: kg, bf?: % gordura}}
 };
 let currentUid = null;
 
@@ -62,7 +64,7 @@ auth.onAuthStateChanged(async user => {
     renderAll();
   } else {
     currentUid = null;
-    cache = { exercises: [], sessions: [], foods: [], nutrition: {}, settings: {} };
+    cache = { exercises: [], sessions: [], foods: [], nutrition: {}, settings: {}, profile: {}, weights: {} };
     document.getElementById('app').style.display = 'none';
     document.getElementById('app-loading').classList.remove('show');
     document.getElementById('login-screen').classList.add('show');
@@ -237,6 +239,7 @@ function shiftDate(days) {
 function renderAll() {
   if (currentTab === 'treino') renderTreino();
   if (currentTab === 'dieta') renderDieta();
+  if (currentTab === 'balanco') renderBalanco();
   if (currentTab === 'historico') renderHistorico();
   if (currentTab === 'exercicios') renderExercicios();
 }
@@ -893,6 +896,385 @@ function deleteFood(id) {
   cache.foods = cache.foods.filter(f => f.id !== id);
   saveToCloud('foods');
   renderDieta();
+}
+
+/* ══════════════════════════════════
+   TAB: BALANÇO — simulação de gasto calórico
+══════════════════════════════════ */
+// Fator do dia a dia SEM contar a academia (o treino é somado à parte)
+const ACTIVITY_LEVELS = [
+  { f: 1.2, label: 'Sedentário (trabalho sentado, pouca caminhada)' },
+  { f: 1.3, label: 'Levemente ativo (caminha um pouco no dia)' },
+  { f: 1.4, label: 'Ativo (fica muito em pé / caminha bastante)' },
+  { f: 1.5, label: 'Muito ativo (trabalho físico pesado)' }
+];
+const KCAL_PER_KG = 7700;   // energia aproximada de 1 kg de gordura corporal
+const SET_MIN     = 3;      // min por série de musculação (execução + descanso)
+const DROP_MIN    = 0.75;   // min extra por carga adicional (drop set)
+const MET_PESO    = 5;
+const MET_TEMPO   = 4;
+const MET_CARDIO_SEM_VEL = 6;
+
+let balPeriod = 7;
+let profileOpen = false;
+let balChart = null;
+
+function profileComplete() {
+  const p = cache.profile || {};
+  return p.sex && p.birthYear && p.height && p.activity;
+}
+
+// Peso mais recente até a data (ou a primeira pesagem, se todas forem depois)
+function weightOn(date) {
+  const dates = Object.keys(cache.weights || {}).sort();
+  if (!dates.length) return null;
+  const before = dates.filter(d => d <= date);
+  const d = before.length ? before[before.length - 1] : dates[0];
+  return { date: d, ...cache.weights[d] };
+}
+
+// Taxa metabólica basal — Mifflin-St Jeor
+function bmr(kg, date) {
+  const p = cache.profile;
+  const age = Number(date.slice(0, 4)) - Number(p.birthYear);
+  return 10 * kg + 6.25 * Number(p.height) - 5 * age + (p.sex === 'M' ? 5 : -161);
+}
+
+// kcal líquidas (acima do repouso) de um MET durante N minutos
+function metKcal(met, kg, min) { return Math.max(0, met - 1) * 3.5 * kg / 200 * min; }
+
+// Esteira — equações do ACSM (caminhada < 8 km/h, corrida ≥ 8 km/h)
+function cardioKcal(seg, kg) {
+  const min = Number(seg.t) || 0, v = Number(seg.v) || 0, g = (Number(seg.i) || 0) / 100;
+  if (!v) return metKcal(MET_CARDIO_SEM_VEL, kg, min);
+  const s = v * 1000 / 60;  // m/min
+  const vo2 = v < 8 ? 0.1 * s + 1.8 * s * g : 0.2 * s + 0.9 * s * g;  // VO2 líquido (sem o repouso)
+  return vo2 * kg / 1000 * 5 * min;
+}
+
+function entryKcal(entry, kg) {
+  const type = exType(entry.exId);
+  if (type === 'cardio') return entry.series.flat().reduce((t, seg) => t + cardioKcal(seg, kg), 0);
+  if (type === 'tempo') {
+    const min = entry.series.flat().reduce((t, seg) => t + (Number(seg.t) || 0), 0) / 60 + entry.series.length;
+    return metKcal(MET_TEMPO, kg, min);
+  }
+  const extras = entry.series.reduce((t, s) => t + Math.max(0, s.length - 1), 0);
+  return metKcal(MET_PESO, kg, entry.series.length * SET_MIN + extras * DROP_MIN);
+}
+
+// Balanço de um dia: ingerido, gasto (TMB + dia a dia + treino) e saldo
+function dayBalance(date) {
+  const wInfo = weightOn(date);
+  if (!wInfo || !profileComplete()) return null;
+  const kg = Number(wInfo.w);
+  const basal = bmr(kg, date);
+  const neat = basal * (Number(cache.profile.activity) - 1);
+  const session = getSession(date);
+  const parts = session ? session.entries.map(e => ({ name: exName(e.exId), kcal: entryKcal(e, kg) })) : [];
+  const treino = parts.reduce((t, p) => t + p.kcal, 0);
+  const day = dayNutri(date);
+  const meals = (day && day.meals) || [];
+  const logged = meals.some(m => (m.items || []).length);
+  const intake = logged ? dayMacros(day) : null;
+  const gasto = basal + neat + treino;
+  return {
+    kg, basal, neat, treino, parts, gasto, logged, trained: parts.length > 0,
+    kcal: intake ? intake.kcal : 0, prot: intake ? intake.prot : 0,
+    saldo: intake ? intake.kcal - gasto : null
+  };
+}
+
+function periodDates(endDate, days) {
+  const out = [];
+  const d = parseDate(endDate);
+  d.setDate(d.getDate() - days + 1);
+  for (let i = 0; i < days; i++) { out.push(toDateStr(d)); d.setDate(d.getDate() + 1); }
+  return out;
+}
+
+function fmtKcal(n) { return Math.round(n).toLocaleString('pt-BR'); }
+function fmtSigned(n, dec) {
+  const v = dec ? Math.round(n * 10 ** dec) / 10 ** dec : Math.round(n);
+  return (v > 0 ? '+' : v < 0 ? '−' : '') + fmtNum(Math.abs(v));
+}
+
+function renderBalanco() {
+  document.getElementById('bal-date').value = currentDate;
+  document.getElementById('bal-date-label').textContent = fmtDateLong(currentDate);
+  const wrap = document.getElementById('bal-content');
+
+  if (!profileComplete()) {
+    wrap.innerHTML = `
+      <div class="bal-note">Para simular seu gasto calórico, preencha seu perfil e registre seu peso. 👇</div>
+      ${profileCardHtml(true)}
+      ${weightCardHtml()}`;
+    return;
+  }
+  if (!weightOn(currentDate)) {
+    wrap.innerHTML = `
+      <div class="bal-note">Registre seu peso para começar a simulação. 👇</div>
+      ${weightCardHtml()}
+      ${profileCardHtml(profileOpen)}`;
+    return;
+  }
+
+  wrap.innerHTML = weightCardHtml() + dayCardHtml() + trendCardHtml() + profileCardHtml(profileOpen);
+  drawBalChart();
+}
+
+/* ── Card: peso do dia ── */
+function weightCardHtml() {
+  const today = (cache.weights || {})[currentDate];
+  const last = weightOn(currentDate);
+  const lastTxt = last && last.date !== currentDate
+    ? `<div class="bal-sub">Última pesagem: ${fmtNum(last.w)}kg${last.bf ? ` · ${fmtNum(last.bf)}% gordura` : ''} em ${fmtDateShort(last.date)}</div>` : '';
+  return `
+    <div class="entry-card">
+      <div class="entry-head"><span class="entry-name">⚖️ Peso do dia</span>
+        ${today ? `<button class="btn-del" title="Apagar pesagem" onclick="deleteWeight()">🗑</button>` : ''}</div>
+      <div class="weight-row">
+        <label>Peso (kg)<input type="number" id="bal-w" step="0.1" min="0" inputmode="decimal" value="${today ? today.w : ''}"></label>
+        <label>% gordura <small>(opcional)</small><input type="number" id="bal-bf" step="0.1" min="0" max="80" inputmode="decimal" value="${today && today.bf ? today.bf : ''}"></label>
+        <button class="btn-primary" onclick="saveWeight()">Salvar</button>
+      </div>
+      ${lastTxt}
+    </div>`;
+}
+
+function saveWeight() {
+  const num = id => parseFloat(String(document.getElementById(id).value).replace(',', '.')) || 0;
+  const w = num('bal-w'), bf = num('bal-bf');
+  if (!w) { alert('Informe o peso em kg.'); return; }
+  if (!cache.weights) cache.weights = {};
+  const entry = { w };
+  if (bf) entry.bf = bf;  // RTDB não aceita campos undefined
+  cache.weights[currentDate] = entry;
+  saveToCloud('weights');
+  renderBalanco();
+}
+
+function deleteWeight() {
+  if (!confirm(`Apagar a pesagem de ${fmtDateShort(currentDate)}?`)) return;
+  delete cache.weights[currentDate];
+  saveToCloud('weights');
+  renderBalanco();
+}
+
+/* ── Card: balanço do dia ── */
+function dayCardHtml() {
+  const b = dayBalance(currentDate);
+  const treinoList = b.parts.map(p =>
+    `<div class="bal-row bal-sub-row"><span>${esc(p.name)}</span><span>${fmtKcal(p.kcal)}</span></div>`).join('');
+  let saldoHtml;
+  if (!b.logged) {
+    saldoHtml = `<div class="bal-note">Nenhuma refeição registrada neste dia — registre na aba Dieta para ver o saldo.</div>`;
+  } else {
+    const cls = b.saldo < -100 ? 'deficit' : b.saldo > 100 ? 'superavit' : 'manut';
+    const txt = b.saldo < -100 ? 'déficit' : b.saldo > 100 ? 'superávit' : 'manutenção';
+    saldoHtml = `<div class="bal-saldo ${cls}">Saldo: <b>${fmtSigned(b.saldo)} kcal</b> <small>(${txt})</small></div>`;
+  }
+  return `
+    <div class="entry-card">
+      <div class="entry-head"><span class="entry-name">🔥 Balanço do dia</span></div>
+      <div class="bal-row"><span>🍽️ Ingerido</span><b>${b.logged ? fmtKcal(b.kcal) + ' kcal' : '—'}</b></div>
+      <div class="bal-row"><span>🔥 Gasto estimado</span><b>${fmtKcal(b.gasto)} kcal</b></div>
+      <div class="bal-row bal-sub-row"><span>Metabolismo basal</span><span>${fmtKcal(b.basal)}</span></div>
+      <div class="bal-row bal-sub-row"><span>Dia a dia (fora da academia)</span><span>${fmtKcal(b.neat)}</span></div>
+      <div class="bal-row bal-sub-row"><span>Treino</span><span>${b.trained ? fmtKcal(b.treino) : 'sem treino'}</span></div>
+      ${treinoList ? `<div class="bal-parts">${treinoList}</div>` : ''}
+      ${saldoHtml}
+    </div>`;
+}
+
+/* ── Card: tendência do período ── */
+function periodStats() {
+  const dates = periodDates(currentDate, balPeriod);
+  const days = dates.map(d => ({ date: d, b: dayBalance(d) }));
+  const logged = days.filter(x => x.b && x.b.logged);
+  const n = logged.length;
+  const avg = f => n ? logged.reduce((t, x) => t + f(x.b), 0) / n : 0;
+  const kgNow = weightOn(currentDate).w;
+
+  // Pesagens reais dentro do período
+  const wDates = Object.keys(cache.weights || {}).filter(d => d >= dates[0] && d <= currentDate).sort();
+  const firstW = wDates.length ? { date: wDates[0], ...cache.weights[wDates[0]] } : null;
+  const lastW  = wDates.length ? { date: wDates[wDates.length - 1], ...cache.weights[wDates[wDates.length - 1]] } : null;
+
+  // Previsão só entre a primeira e a última pesagem, para comparar com a balança
+  let predDelta = null;
+  if (firstW && lastW && firstW.date !== lastW.date) {
+    predDelta = logged.filter(x => x.date > firstW.date && x.date <= lastW.date)
+      .reduce((t, x) => t + x.b.saldo, 0) / KCAL_PER_KG;
+  }
+  const bfDates = wDates.filter(d => cache.weights[d].bf);
+  let comp = null;
+  if (bfDates.length >= 2) {
+    const a = cache.weights[bfDates[0]], z = cache.weights[bfDates[bfDates.length - 1]];
+    const fat = w => w.w * w.bf / 100;
+    comp = { from: bfDates[0], to: bfDates[bfDates.length - 1],
+             fat: fat(z) - fat(a), lean: (z.w - fat(z)) - (a.w - fat(a)) };
+  }
+
+  return {
+    dates, days, n,
+    trainedDays: days.filter(x => x.b && x.b.trained).length,
+    avgIn: avg(b => b.kcal), avgOut: avg(b => b.gasto), avgSaldo: avg(b => b.saldo),
+    protKg: avg(b => b.prot) / kgNow,
+    totalPred: logged.reduce((t, x) => t + x.b.saldo, 0) / KCAL_PER_KG,
+    realDelta: firstW && lastW && firstW.date !== lastW.date ? lastW.w - firstW.w : null,
+    predDelta, firstW, lastW, comp
+  };
+}
+
+function trendCardHtml() {
+  const s = periodStats();
+  const tabs = [7, 14, 30].map(p =>
+    `<button class="period-btn ${balPeriod === p ? 'active' : ''}" onclick="setBalPeriod(${p})">${p} dias</button>`).join('');
+
+  if (s.n === 0) {
+    return `
+      <div class="entry-card">
+        <div class="entry-head"><span class="entry-name">📈 Tendência</span><div class="period-tabs">${tabs}</div></div>
+        <div class="bal-note">Nenhum dia com alimentação registrada nesse período.</div>
+      </div>`;
+  }
+
+  const saldoCls = s.avgSaldo < -100 ? 'deficit' : s.avgSaldo > 100 ? 'superavit' : '';
+  const chips = `
+    <div class="bal-grid">
+      <div class="sum-chip"><b>${fmtKcal(s.avgIn)}</b><small>kcal/dia ingerido</small></div>
+      <div class="sum-chip"><b>${fmtKcal(s.avgOut)}</b><small>kcal/dia gasto</small></div>
+      <div class="sum-chip ${saldoCls}"><b>${fmtSigned(s.avgSaldo)}</b><small>saldo/dia</small></div>
+      <div class="sum-chip"><b>${fmtSigned(s.predDelta !== null ? s.predDelta : s.totalPred, 2)}kg</b><small>simulação</small></div>
+      <div class="sum-chip"><b>${s.realDelta !== null ? fmtSigned(s.realDelta, 1) + 'kg' : '—'}</b><small>balança</small></div>
+      <div class="sum-chip"><b>${fmtNum(Math.round(s.protKg * 10) / 10)}g/kg</b><small>proteína</small></div>
+    </div>`;
+
+  return `
+    <div class="entry-card">
+      <div class="entry-head"><span class="entry-name">📈 Tendência</span><div class="period-tabs">${tabs}</div></div>
+      <div class="bal-sub">${s.n} de ${balPeriod} dias com alimentação registrada · ${s.trainedDays} dias de treino</div>
+      ${chips}
+      <canvas id="bal-chart"></canvas>
+      <div class="bal-insights">${insights(s).map(t => `<p>${t}</p>`).join('')}</div>
+    </div>`;
+}
+
+function setBalPeriod(p) { balPeriod = p; renderBalanco(); }
+
+// Interpretação: déficit/superávit × proteína × treino (+ composição se houver % gordura)
+function insights(s) {
+  const out = [];
+  const protOk = s.protKg >= 1.6;
+  const treinaBem = s.trainedDays >= Math.max(1, Math.round(balPeriod / 7 * 2));
+  const protTxt = `${fmtNum(Math.round(s.protKg * 10) / 10)} g/kg`;
+
+  if (s.n < 3) out.push('📝 Poucos dias registrados — a tendência fica mais confiável com pelo menos 5–7 dias de alimentação anotada.');
+  const faltam = balPeriod - s.n;
+  if (faltam === 1) out.push('ℹ️ 1 dia sem refeições registradas ficou de fora do cálculo (não dá para supor quanto você comeu).');
+  else if (faltam > 1) out.push(`ℹ️ ${faltam} dias sem refeições registradas ficaram de fora do cálculo (não dá para supor quanto você comeu).`);
+
+  if (s.avgSaldo < -1000) {
+    out.push('⚠️ Déficit muito agressivo (mais de 1000 kcal/dia). Isso aumenta bastante o risco de perder massa magra e de cansaço no treino.');
+  } else if (s.avgSaldo < -150) {
+    if (protOk && treinaBem) out.push(`✅ Déficit moderado com treino e proteína boa (${protTxt}): o melhor cenário para <b>perder gordura preservando massa magra</b>.`);
+    else if (!protOk) out.push(`⚠️ Você está em déficit, mas a proteína está baixa (${protTxt}). Com menos de 1,6 g/kg, parte do peso perdido tende a ser massa magra. O ideal é 1,6–2,2 g/kg.`);
+    else out.push('⚠️ Déficit com poucos treinos no período: sem estímulo de musculação, parte do peso perdido tende a ser massa magra.');
+  } else if (s.avgSaldo > 500) {
+    out.push('⚠️ Superávit alto (mais de 500 kcal/dia): a maior parte do excedente tende a virar <b>gordura</b>, mesmo treinando.');
+  } else if (s.avgSaldo > 150) {
+    if (protOk && treinaBem) out.push(`💪 Superávit moderado com treino e proteína boa (${protTxt}): cenário de <b>ganho de massa magra</b>, com algum ganho de gordura junto.`);
+    else out.push('⚠️ Superávit sem treino/proteína suficientes: o excedente tende a virar principalmente gordura.');
+  } else {
+    if (protOk && treinaBem) out.push(`⚖️ Perto da manutenção, com treino e proteína boa (${protTxt}): peso estável, com chance de <b>recomposição</b> (perder gordura e ganhar massa devagar).`);
+    else out.push('⚖️ Perto da manutenção: a tendência é o peso ficar estável.');
+  }
+
+  if (s.realDelta !== null && s.predDelta !== null) {
+    out.push(`⚖️ Entre ${fmtDateShort(s.firstW.date)} e ${fmtDateShort(s.lastW.date)} a balança mudou <b>${fmtSigned(s.realDelta, 1)} kg</b>; a simulação previa <b>${fmtSigned(s.predDelta, 2)} kg</b>.`);
+    if (Math.abs(s.realDelta - s.predDelta) > 1) out.push('🔍 Diferença grande entre previsto e real. Pode ser líquido/retenção (varia 1–2 kg de um dia pro outro), refeições não anotadas, ou seu gasto real diferente da estimativa. Olhe a tendência de várias semanas, não um dia.');
+  } else {
+    out.push('📉 Registre seu peso pelo menos 2 vezes no período (de preferência em jejum, mesmo horário) para comparar a simulação com a balança.');
+  }
+
+  if (s.comp) {
+    const f = fmtSigned(s.comp.fat, 1), l = fmtSigned(s.comp.lean, 1);
+    out.push(`🧬 Pela % de gordura (${fmtDateShort(s.comp.from)} → ${fmtDateShort(s.comp.to)}): gordura <b>${f} kg</b>, massa magra <b>${l} kg</b>. Bioimpedância oscila bastante; confie mais na tendência de várias medições.`);
+  } else {
+    out.push('🧬 Para ver se a mudança é gordura ou massa magra, anote também a <b>% de gordura</b> nas pesagens (bioimpedância ou avaliação física).');
+  }
+  return out;
+}
+
+// Gráfico: peso real × peso previsto pela simulação
+function drawBalChart() {
+  const canvas = document.getElementById('bal-chart');
+  if (balChart) { balChart.destroy(); balChart = null; }
+  if (!canvas) return;
+  const s = periodStats();
+  const base = weightOn(s.dates[0]);
+  let cum = 0;
+  const pred = s.days.map(x => {
+    if (x.b && x.b.logged && x.date > base.date) cum += x.b.saldo;
+    return Math.round((Number(base.w) + cum / KCAL_PER_KG) * 100) / 100;
+  });
+  const real = s.dates.map(d => cache.weights[d] ? Number(cache.weights[d].w) : null);
+  balChart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: s.dates.map(fmtDateShort),
+      datasets: [
+        { label: 'Balança', data: real, borderColor: '#ea580c', backgroundColor: '#ea580c',
+          spanGaps: true, pointRadius: 4, tension: 0.2 },
+        { label: 'Simulação', data: pred, borderColor: '#94a3b8', borderDash: [5, 4],
+          pointRadius: 0, tension: 0.2 }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { boxWidth: 12, font: { size: 11 } } } },
+      scales: { y: { ticks: { callback: v => fmtNum(v) + 'kg' } }, x: { ticks: { maxTicksLimit: 8 } } }
+    }
+  });
+}
+
+/* ── Card: perfil ── */
+function profileCardHtml(open) {
+  const p = cache.profile || {};
+  const head = `<div class="entry-head" ${profileComplete() ? 'style="cursor:pointer" onclick="toggleProfile()"' : ''}>
+      <span class="entry-name">👤 Meu perfil</span>${profileComplete() ? `<span>${open ? '▲' : '▼'}</span>` : ''}</div>`;
+  if (!open) return `<div class="entry-card">${head}</div>`;
+  return `
+    <div class="entry-card">
+      ${head}
+      <div class="food-grid profile-grid">
+        <label>Sexo<select id="pf-sex">
+          <option value="F" ${p.sex !== 'M' ? 'selected' : ''}>Feminino</option>
+          <option value="M" ${p.sex === 'M' ? 'selected' : ''}>Masculino</option></select></label>
+        <label>Ano de nascimento<input type="number" id="pf-year" inputmode="numeric" min="1920" max="2020" value="${p.birthYear || ''}"></label>
+        <label>Altura (cm)<input type="number" id="pf-height" inputmode="numeric" min="100" max="230" value="${p.height || ''}"></label>
+        <label class="full">Rotina fora da academia<select id="pf-act">
+          ${ACTIVITY_LEVELS.map(a => `<option value="${a.f}" ${Number(p.activity) === a.f ? 'selected' : ''}>${a.label}</option>`).join('')}
+        </select></label>
+      </div>
+      <p class="food-hint">O treino é calculado à parte, a partir do que você registra na aba Treino.</p>
+      <button class="btn-primary btn-block" onclick="saveProfile()">Salvar perfil</button>
+    </div>`;
+}
+
+function toggleProfile() { profileOpen = !profileOpen; renderBalanco(); }
+
+function saveProfile() {
+  const sex = document.getElementById('pf-sex').value;
+  const birthYear = parseInt(document.getElementById('pf-year').value);
+  const height = parseFloat(String(document.getElementById('pf-height').value).replace(',', '.'));
+  const activity = parseFloat(document.getElementById('pf-act').value);
+  if (!birthYear || !height) { alert('Preencha o ano de nascimento e a altura.'); return; }
+  cache.profile = { sex, birthYear, height, activity };
+  saveToCloud('profile');
+  profileOpen = false;
+  renderBalanco();
 }
 
 /* ══════════════════════════════════

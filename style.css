@@ -114,7 +114,7 @@ main { max-width: 680px; margin: 0 auto; padding: 16px 14px 90px; }
   background: none; border: none; color: var(--muted);
   font-size: 0.72rem; font-weight: 600; cursor: pointer;
   display: flex; flex-direction: column; align-items: center; gap: 2px;
-  padding: 4px 12px; border-radius: 10px;
+  padding: 4px 8px; border-radius: 10px;
 }
 .nav-btn span { font-size: 1.3rem; }
 .nav-btn.active { color: var(--primary); background: var(--primary-soft); }
@@ -308,6 +308,64 @@ main { max-width: 680px; margin: 0 auto; padding: 16px 14px 90px; }
 }
 .food-grid input:focus { outline: 2px solid var(--primary); border-color: transparent; }
 .food-hint { font-size: 0.75rem; color: var(--muted); margin-bottom: 12px; }
+
+/* ══ BALANÇO ══ */
+.bal-note {
+  background: var(--primary-soft); color: var(--text); border-radius: 10px;
+  padding: 10px 12px; font-size: 0.85rem; margin: 8px 0 12px;
+}
+.bal-sub { font-size: 0.78rem; color: var(--muted); margin: 4px 0 10px; }
+.bal-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 5px 0; font-size: 0.92rem;
+}
+.bal-sub-row { font-size: 0.8rem; color: var(--muted); padding: 2px 0 2px 22px; }
+.bal-parts { border-left: 2px solid var(--border); margin: 2px 0 4px 26px; }
+.bal-parts .bal-sub-row { padding-left: 10px; }
+.bal-saldo {
+  margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+  font-size: 0.95rem; background: var(--bg);
+}
+.bal-saldo small { color: var(--muted); }
+.deficit   b { color: var(--green); }
+.superavit b { color: var(--red); }
+.bal-saldo.deficit   { background: rgba(22,163,74,0.1); }
+.bal-saldo.superavit { background: rgba(220,38,38,0.08); }
+
+.bal-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 12px; }
+.bal-grid .sum-chip { padding: 8px 4px; }
+.bal-grid .sum-chip b { font-size: 0.95rem; }
+#bal-chart { max-height: 220px; margin-bottom: 10px; }
+.bal-insights p {
+  font-size: 0.84rem; line-height: 1.45; padding: 8px 0;
+  border-top: 1px dashed var(--border);
+}
+
+.period-tabs { display: flex; gap: 4px; }
+.period-btn {
+  background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+  border-radius: 8px; padding: 3px 8px; font-size: 0.72rem; font-weight: 700;
+  cursor: pointer; font-family: inherit;
+}
+.period-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+.weight-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-top: 6px; }
+.weight-row label {
+  flex: 1; min-width: 100px; display: flex; flex-direction: column; gap: 4px;
+  font-size: 0.78rem; color: var(--muted); font-weight: 600;
+}
+.weight-row input {
+  padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--input-bg); color: var(--text); font-size: 0.95rem; font-family: inherit;
+}
+.weight-row input:focus { outline: 2px solid var(--primary); border-color: transparent; }
+
+.profile-grid label:first-child { grid-column: auto; }
+.profile-grid label.full { grid-column: 1 / -1; }
+.food-grid select {
+  padding: 9px 8px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--input-bg); color: var(--text); font-size: 0.9rem; font-family: inherit;
+}
 
 /* ══ MODAL ══ */
 .modal {

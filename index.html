@@ -71,6 +71,19 @@
       <div id="foods-section"></div>
     </section>
 
+    <!-- ── TAB: BALANÇO ── -->
+    <section id="tab-balanco" class="tab" style="display:none">
+      <div class="date-bar">
+        <button class="btn-icon" onclick="shiftDate(-1)">◀</button>
+        <div class="date-center">
+          <input type="date" id="bal-date" onchange="setDate(this.value)">
+          <span id="bal-date-label"></span>
+        </div>
+        <button class="btn-icon" onclick="shiftDate(1)">▶</button>
+      </div>
+      <div id="bal-content"></div>
+    </section>
+
     <!-- ── TAB: HISTÓRICO ── -->
     <section id="tab-historico" class="tab" style="display:none">
       <h2>Histórico de treinos</h2>
@@ -96,6 +109,7 @@
   <nav id="bottom-nav">
     <button class="nav-btn active" data-tab="treino" onclick="showTab('treino')"><span>🏋️</span>Treino</button>
     <button class="nav-btn" data-tab="dieta" onclick="showTab('dieta')"><span>🍽️</span>Dieta</button>
+    <button class="nav-btn" data-tab="balanco" onclick="showTab('balanco')"><span>🔥</span>Balanço</button>
     <button class="nav-btn" data-tab="historico" onclick="showTab('historico')"><span>📅</span>Histórico</button>
     <button class="nav-btn" data-tab="exercicios" onclick="showTab('exercicios')"><span>📋</span>Exercícios</button>
   </nav>
