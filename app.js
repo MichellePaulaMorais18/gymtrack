@@ -21,7 +21,8 @@ let cache = {
   nutrition: {},  // {'YYYY-MM-DD': {water: ml, meals: [{id, name, items:[{foodId, qty}]}]}}
   settings:  {},  // {waterGoal: ml}
   profile:   {},  // {sex:'F'|'M', birthYear, height (cm), activity (fator do dia a dia)}
-  weights:   {}   // {'YYYY-MM-DD': {w: kg, bf?: % gordura}}
+  weights:   {},  // {'YYYY-MM-DD': {w: kg, bf?: % gordura}}
+  templates: []   // refeições prontas: [{id, name, items:[{foodId, qty}]}]
 };
 let currentUid = null;
 
@@ -61,10 +62,10 @@ auth.onAuthStateChanged(async user => {
     document.getElementById('user-avatar').src = user.photoURL || '';
     document.getElementById('app-loading').classList.remove('show');
     document.getElementById('app').style.display = 'block';
-    renderAll();
+    showTab(currentTab);
   } else {
     currentUid = null;
-    cache = { exercises: [], sessions: [], foods: [], nutrition: {}, settings: {}, profile: {}, weights: {} };
+    cache = { exercises: [], sessions: [], foods: [], nutrition: {}, settings: {}, profile: {}, weights: {}, templates: [] };
     document.getElementById('app').style.display = 'none';
     document.getElementById('app-loading').classList.remove('show');
     document.getElementById('login-screen').classList.add('show');
@@ -214,12 +215,51 @@ let currentTab = 'treino';
 let currentDate = toDateStr(new Date());
 let expandedExId = null;
 
+// Menu lateral em sanfona: grupos → abas [id, ícone, nome]
+const NAV = [
+  { group: 'Treino', icon: '🏋️', tabs: [
+    ['treino', '🏋️', 'Treino do dia'], ['historico', '📅', 'Histórico'], ['exercicios', '📋', 'Exercícios']] },
+  { group: 'Alimentação', icon: '🍽️', tabs: [
+    ['dieta', '🍽️', 'Dieta do dia'], ['cardapio', '🥗', 'Cardápio']] },
+  { group: 'Resultados', icon: '📊', tabs: [
+    ['balanco', '🔥', 'Balanço calórico']] }
+];
+let navClosed = {};
+try { navClosed = JSON.parse(localStorage.getItem('navClosed') || '{}'); } catch (e) {}
+
+function renderDrawer() {
+  document.getElementById('drawer-nav').innerHTML = NAV.map(g => {
+    const closed = navClosed[g.group];
+    return `
+      <div class="nav-group">
+        <button class="nav-group-head" onclick="toggleNavGroup('${g.group}')">
+          <span>${g.icon} ${g.group}</span><span class="chev">${closed ? '▸' : '▾'}</span>
+        </button>
+        ${closed ? '' : g.tabs.map(([id, icon, label]) => `
+          <button class="nav-item ${currentTab === id ? 'active' : ''}" onclick="showTab('${id}')">
+            <span>${icon}</span>${label}</button>`).join('')}
+      </div>`;
+  }).join('');
+}
+
+function toggleNavGroup(group) {
+  navClosed[group] = !navClosed[group];
+  try { localStorage.setItem('navClosed', JSON.stringify(navClosed)); } catch (e) {}
+  renderDrawer();
+}
+
+function openDrawer()  { renderDrawer(); document.body.classList.add('drawer-open'); }
+function closeDrawer() { document.body.classList.remove('drawer-open'); }
+
 function showTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(el => el.style.display = 'none');
   document.getElementById('tab-' + tab).style.display = 'block';
-  document.querySelectorAll('.nav-btn').forEach(b =>
-    b.classList.toggle('active', b.dataset.tab === tab));
+  const info = NAV.flatMap(g => g.tabs).find(t => t[0] === tab);
+  document.getElementById('page-title').textContent = info ? `${info[1]} ${info[2]}` : 'GymTrack';
+  renderDrawer();
+  closeDrawer();
+  window.scrollTo(0, 0);
   renderAll();
 }
 
@@ -240,6 +280,7 @@ function renderAll() {
   if (currentTab === 'treino') renderTreino();
   if (currentTab === 'dieta') renderDieta();
   if (currentTab === 'balanco') renderBalanco();
+  if (currentTab === 'cardapio') renderCardapio();
   if (currentTab === 'historico') renderHistorico();
   if (currentTab === 'exercicios') renderExercicios();
 }
@@ -605,8 +646,7 @@ function deleteExercise(id) {
    TAB: DIETA — alimentos, refeições e água
 ══════════════════════════════════ */
 const MEAL_SUGGESTIONS = ['☕ Café da manhã', '🍽️ Almoço', '🥪 Lanche', '🌙 Jantar', '🍎 Ceia'];
-let foodsOpen = false;
-let pickerMealIdx = null;
+let pickerTarget = null;   // {kind:'meal'|'tpl', key} — prato que recebe o alimento escolhido
 let editingFoodId = null;
 
 function closeModal(id) { document.getElementById(id).classList.remove('show'); }
@@ -719,59 +759,60 @@ function renderDieta() {
     wrap.innerHTML = `<div class="empty-state"><span class="big">🍽️</span>
       Nenhuma refeição registrada neste dia.</div>`;
   } else {
-    wrap.innerHTML = meals.map((meal, mi) => {
-      const items = meal.items || [];
-      const itemsHtml = items.map((item, ii) => {
-        const f = getFood(item.foodId);
-        return `
-          <div class="meal-item">
-            <div class="meal-item-top">
-              <input type="number" step="0.5" min="0" inputmode="decimal" value="${item.qty}"
-                onchange="updQty(${mi},${ii},this.value)">
-              <span class="unit">×</span>
-              <span class="meal-item-name">${f ? esc(f.name) : '(excluído)'}${f && f.portion ? ` <small>${esc(f.portion)}</small>` : ''}</span>
-              <button class="btn-tiny danger" title="Remover do prato" onclick="removeMealItem(${mi},${ii})">✕</button>
-            </div>
-            <div class="meal-item-macros">${macroLine(itemMacros(item))}</div>
-          </div>`;
-      }).join('');
-      const totalHtml = items.length
-        ? `<div class="meal-total">Total: <b>${fmtG(mealMacros(meal).kcal)} kcal</b> · ${macroLine(mealMacros(meal), true)}</div>`
-        : '<p class="meal-empty">Prato vazio — adicione alimentos.</p>';
-      return `
-        <div class="entry-card">
-          <div class="entry-head">
-            <span class="entry-name">${esc(meal.name)}</span>
-            <button class="btn-del" title="Remover refeição" onclick="removeMeal(${mi})">🗑</button>
+    wrap.innerHTML = meals.map((meal, mi) => `
+      <div class="entry-card">
+        <div class="entry-head">
+          <span class="entry-name">${esc(meal.name)}</span>
+          <div class="hist-actions">
+            ${(meal.items || []).length ? `<button class="btn-tiny" title="Salvar como refeição pronta" onclick="saveMealAsTemplate(${mi})">💾</button>` : ''}
+            <button class="btn-tiny danger" title="Remover refeição" onclick="removeMeal(${mi})">🗑</button>
           </div>
-          ${itemsHtml}
-          ${totalHtml}
-          <button class="btn-add-serie" onclick="openFoodPicker(${mi})">＋ Alimento</button>
-        </div>`;
-    }).join('');
-  }
-
-  // Meus alimentos
-  const foods = cache.foods;
-  let foodsHtml = '';
-  if (foodsOpen) {
-    foodsHtml = foods.map(f => `
-      <div class="food-row">
-        <div class="food-row-info">
-          <b>${esc(f.name)}</b> <small>${esc(f.portion || '')}</small>
-          <div class="meal-item-macros">${macroLine(f)}</div>
         </div>
-        <button class="btn-tiny" title="Editar" onclick="openFoodForm('${f.id}')">✏️</button>
-        <button class="btn-tiny danger" title="Excluir" onclick="deleteFood('${f.id}')">🗑</button>
-      </div>`).join('') || '<p class="meal-empty">Nenhum alimento cadastrado ainda.</p>';
-    foodsHtml += `<button class="btn-add-serie" onclick="pickerMealIdx=null;openFoodForm(null)">＋ Novo alimento</button>`;
+        ${plateHtml(meal, 'meal', mi)}
+      </div>`).join('');
   }
-  document.getElementById('foods-section').innerHTML = `
-    <div class="foods-toggle" onclick="toggleFoods()">🥗 Meus alimentos (${foods.length}) ${foodsOpen ? '▲' : '▼'}</div>
-    ${foodsHtml}`;
 }
 
-function toggleFoods() { foodsOpen = !foodsOpen; renderDieta(); }
+/* ── Editor de prato (refeição do dia ou refeição pronta) ──
+   kind 'meal' → key = índice da refeição no dia atual
+   kind 'tpl'  → key = id da refeição pronta */
+function plateArgs(kind, key) { return kind === 'meal' ? `'meal',${key}` : `'tpl','${key}'`; }
+
+function getPlate(kind, key) {
+  const plate = kind === 'meal' ? currentMeals()[key] : cache.templates.find(t => t.id === key);
+  if (plate && !plate.items) plate.items = [];  // RTDB não guarda listas vazias
+  return plate;
+}
+
+function savePlate(kind) {
+  if (kind === 'meal') saveNutrition(); else saveToCloud('templates');
+  renderAll();
+}
+
+function plateHtml(plate, kind, key) {
+  const a = plateArgs(kind, key);
+  const items = plate.items || [];
+  const itemsHtml = items.map((item, ii) => {
+    const f = getFood(item.foodId);
+    return `
+      <div class="meal-item">
+        <div class="meal-item-top">
+          <input type="number" step="0.5" min="0" inputmode="decimal" value="${item.qty}"
+            onchange="updQty(${a},${ii},this.value)">
+          <span class="unit">×</span>
+          <span class="meal-item-name">${f ? esc(f.name) : '(excluído)'}${f && f.portion ? ` <small>${esc(f.portion)}</small>` : ''}</span>
+          <button class="btn-tiny danger" title="Remover do prato" onclick="removePlateItem(${a},${ii})">✕</button>
+        </div>
+        <div class="meal-item-macros">${macroLine(itemMacros(item))}</div>
+      </div>`;
+  }).join('');
+  const m = mealMacros(plate);
+  const totalHtml = items.length
+    ? `<div class="meal-total">Total: <b>${fmtG(m.kcal)} kcal</b> · ${macroLine(m, true)}</div>`
+    : '<p class="meal-empty">Prato vazio — adicione alimentos.</p>';
+  return `${itemsHtml}${totalHtml}
+    <button class="btn-add-serie" onclick="openFoodPicker(${a})">＋ Alimento</button>`;
+}
 
 /* ── Água ── */
 function addWater(ml) {
@@ -791,15 +832,38 @@ function setWaterGoal() {
 
 /* ── Refeições ── */
 function openMealModal() {
+  const tpls = cache.templates;
+  document.getElementById('modal-meal-templates').innerHTML = tpls.length ? `
+    <p class="modal-label">📋 Refeições prontas</p>
+    <div class="pick-list">${tpls.map(t => `
+      <button class="ex-pick" onclick="applyTemplate('${t.id}')">${esc(t.name)} <small>${fmtG(mealMacros(t).kcal)}kcal</small></button>`).join('')}
+    </div>` : `
+    <p class="food-hint">Dica: crie refeições prontas no 🥗 Cardápio (ou salve uma refeição do dia com 💾) para adicioná-las com um toque.</p>`;
   document.getElementById('modal-meal-list').innerHTML = MEAL_SUGGESTIONS.map(n =>
     `<button class="ex-pick" onclick="addMeal('${n}')">${n}</button>`).join('');
   document.getElementById('modal-meal-name').value = '';
   document.getElementById('modal-meal').classList.add('show');
 }
 
-function addMeal(name) {
-  getOrCreateDay(currentDate).meals.push({ id: uid(), name, items: [] });
+function addMeal(name, items) {
+  getOrCreateDay(currentDate).meals.push({ id: uid(), name, items: items || [] });
   saveNutrition(); closeModal('modal-meal'); renderDieta();
+}
+
+// Copia os itens da refeição pronta — editar o prato do dia não altera o modelo
+function applyTemplate(id) {
+  const t = cache.templates.find(x => x.id === id);
+  if (!t) return;
+  addMeal(t.name, (t.items || []).map(it => ({ ...it })));
+}
+
+function saveMealAsTemplate(mi) {
+  const meal = currentMeals()[mi];
+  const name = prompt('Nome da refeição pronta:', meal.name);
+  if (!name || !name.trim()) return;
+  cache.templates.push({ id: uid(), name: name.trim(), items: (meal.items || []).map(it => ({ ...it })) });
+  saveToCloud('templates');
+  alert(`"${name.trim()}" salva nas refeições prontas do Cardápio.`);
 }
 
 function addMealCustom(ev) {
@@ -817,32 +881,51 @@ function removeMeal(mi) {
 }
 
 /* ── Itens do prato ── */
-function openFoodPicker(mi) {
-  pickerMealIdx = mi;
-  const list = document.getElementById('modal-food-list');
-  list.innerHTML = cache.foods.length
-    ? cache.foods.map(f => `
-        <button class="ex-pick" onclick="pickFood('${f.id}')">${esc(f.name)} <small>${fmtG(f.kcal || 0)}kcal</small></button>`).join('')
-    : '<p style="color:var(--muted);font-size:0.85rem;margin-bottom:8px">Nenhum alimento cadastrado — crie o primeiro abaixo.</p>';
+function sortedFoods() { return [...cache.foods].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')); }
+
+function matchesSearch(text, q) {
+  const norm = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  return norm(text).includes(norm(q));
+}
+
+function openFoodPicker(kind, key) {
+  pickerTarget = { kind, key };
+  document.getElementById('food-search').value = '';
+  renderFoodPickerList();
   document.getElementById('modal-food-picker').classList.add('show');
 }
 
+function renderFoodPickerList() {
+  const q = document.getElementById('food-search').value.trim();
+  const foods = sortedFoods().filter(f => !q || matchesSearch(f.name, q));
+  document.getElementById('modal-food-list').innerHTML = foods.length
+    ? foods.map(f => `
+        <button class="ex-pick" onclick="pickFood('${f.id}')">${esc(f.name)} <small>${fmtG(f.kcal || 0)}kcal</small></button>`).join('')
+    : `<p class="meal-empty">${cache.foods.length ? 'Nenhum alimento encontrado.' : 'Nenhum alimento cadastrado — crie o primeiro abaixo.'}</p>`;
+}
+
+function addToTarget(foodId) {
+  if (!pickerTarget) return false;
+  const plate = getPlate(pickerTarget.kind, pickerTarget.key);
+  if (!plate) return false;
+  plate.items.push({ foodId, qty: 1 });
+  savePlate(pickerTarget.kind);
+  return true;
+}
+
 function pickFood(foodId) {
-  const meal = currentMeals()[pickerMealIdx];
-  if (!meal) return;
-  if (!meal.items) meal.items = [];
-  meal.items.push({ foodId, qty: 1 });
-  saveNutrition(); closeModal('modal-food-picker'); renderDieta();
+  addToTarget(foodId);
+  closeModal('modal-food-picker');
 }
 
-function updQty(mi, ii, value) {
-  currentMeals()[mi].items[ii].qty = parseFloat(String(value).replace(',', '.')) || 0;
-  saveNutrition(); renderDieta();
+function updQty(kind, key, ii, value) {
+  getPlate(kind, key).items[ii].qty = parseFloat(String(value).replace(',', '.')) || 0;
+  savePlate(kind);
 }
 
-function removeMealItem(mi, ii) {
-  currentMeals()[mi].items.splice(ii, 1);
-  saveNutrition(); renderDieta();
+function removePlateItem(kind, key, ii) {
+  getPlate(kind, key).items.splice(ii, 1);
+  savePlate(kind);
 }
 
 /* ── Cadastro de alimentos ── */
@@ -870,32 +953,142 @@ function saveFoodForm(ev) {
   if (!data.name) return;
   if (editingFoodId) {
     Object.assign(getFood(editingFoodId), data);
+    saveToCloud('foods');
   } else {
     const food = { id: uid(), ...data };
     cache.foods.push(food);
-    // Se veio do picker de uma refeição, já adiciona ao prato
-    if (pickerMealIdx !== null && currentMeals()[pickerMealIdx]) {
-      const meal = currentMeals()[pickerMealIdx];
-      if (!meal.items) meal.items = [];
-      meal.items.push({ foodId: food.id, qty: 1 });
-      saveNutrition();
-    }
+    saveToCloud('foods');
+    addToTarget(food.id);  // se veio do "＋ Alimento" de um prato, já entra nele
   }
-  saveToCloud('foods');
+  pickerTarget = null;
   closeModal('modal-food-form');
-  renderDieta();
+  renderAll();
 }
 
+function newFood() { pickerTarget = null; openFoodForm(null); }
+
 function deleteFood(id) {
-  const used = Object.values(cache.nutrition).some(d =>
-    (d.meals || []).some(m => (m.items || []).some(it => it.foodId === id)));
-  const msg = used
-    ? 'Este alimento aparece em refeições registradas. Excluir mesmo assim? (os pratos antigos mostrarão "(excluído)")'
+  const usedIn = items => (items || []).some(it => it.foodId === id);
+  const inMeals = Object.values(cache.nutrition).some(d => (d.meals || []).some(m => usedIn(m.items)));
+  const inTpls = cache.templates.some(t => usedIn(t.items));
+  const msg = inMeals || inTpls
+    ? `Este alimento aparece em ${inMeals ? 'refeições registradas' : ''}${inMeals && inTpls ? ' e em ' : ''}${inTpls ? 'refeições prontas' : ''}. Excluir mesmo assim? (onde ele aparece vai mostrar "(excluído)")`
     : 'Excluir este alimento?';
   if (!confirm(msg)) return;
   cache.foods = cache.foods.filter(f => f.id !== id);
   saveToCloud('foods');
-  renderDieta();
+  renderAll();
+}
+
+/* ══════════════════════════════════
+   TAB: CARDÁPIO — alimentos e refeições prontas
+══════════════════════════════════ */
+let cardapioSub = 'templates';
+let expandedTplId = null;
+
+function setCardapioSub(sub) {
+  cardapioSub = sub;
+  document.querySelectorAll('.seg-tab').forEach(b => b.classList.toggle('active', b.dataset.sub === sub));
+  renderCardapio();
+}
+
+function renderCardapio() {
+  const wrap = document.getElementById('cardapio-content');
+  if (cardapioSub === 'foods') {
+    // Mantém a busca digitada entre re-renderizações
+    const prev = document.getElementById('foods-search');
+    const q = prev ? prev.value : '';
+    wrap.innerHTML = `
+      <div class="add-form">
+        <input type="search" id="foods-search" placeholder="🔍 Buscar alimento..." value="${esc(q)}" oninput="renderFoodsList()">
+        <button class="btn-primary" onclick="newFood()">＋ Novo</button>
+      </div>
+      <div id="foods-list"></div>`;
+    renderFoodsList();
+    return;
+  }
+
+  const tpls = cache.templates;
+  wrap.innerHTML = `
+    <p class="food-hint">Monte aqui seus pratos padrão (ex.: "Café da manhã padrão") e, na Dieta do dia, adicione com um toque em <b>＋ Adicionar refeição</b>.</p>
+    ${tpls.length ? '' : `<div class="empty-state"><span class="big">📋</span>Nenhuma refeição pronta ainda.</div>`}
+    ${tpls.map(t => {
+      const open = expandedTplId === t.id;
+      const m = mealMacros(t);
+      return `
+        <div class="entry-card">
+          <div class="entry-head tpl-head" onclick="toggleTpl('${t.id}')">
+            <div>
+              <span class="entry-name">${esc(t.name)}</span>
+              <div class="ex-meta">${(t.items || []).length} alimento${(t.items || []).length === 1 ? '' : 's'} · ${fmtG(m.kcal)} kcal · P ${fmtG(m.prot)}g</div>
+            </div>
+            <span>${open ? '▲' : '▼'}</span>
+          </div>
+          ${open ? `
+            <div class="tpl-body">
+              ${plateHtml(t, 'tpl', t.id)}
+              <div class="tpl-actions">
+                <button class="btn-mini" onclick="renameTemplate('${t.id}')">✏️ Renomear</button>
+                <button class="btn-mini" onclick="duplicateTemplate('${t.id}')">⧉ Duplicar</button>
+                <button class="btn-mini danger-mini" onclick="deleteTemplate('${t.id}')">🗑 Excluir</button>
+              </div>
+            </div>` : ''}
+        </div>`;
+    }).join('')}
+    <button class="btn-primary btn-block" onclick="newTemplate()">＋ Nova refeição pronta</button>`;
+}
+
+function renderFoodsList() {
+  const q = document.getElementById('foods-search').value.trim();
+  const foods = sortedFoods().filter(f => !q || matchesSearch(f.name, q));
+  document.getElementById('foods-list').innerHTML = foods.map(f => `
+    <div class="food-row">
+      <div class="food-row-info">
+        <b>${esc(f.name)}</b> <small>${esc(f.portion || '')}</small>
+        <div class="meal-item-macros">${macroLine(f)}</div>
+      </div>
+      <button class="btn-tiny" title="Editar" onclick="openFoodForm('${f.id}')">✏️</button>
+      <button class="btn-tiny danger" title="Excluir" onclick="deleteFood('${f.id}')">🗑</button>
+    </div>`).join('') || `<div class="empty-state"><span class="big">🥗</span>
+      ${cache.foods.length ? 'Nenhum alimento encontrado.' : 'Nenhum alimento cadastrado ainda.'}</div>`;
+}
+
+function toggleTpl(id) { expandedTplId = expandedTplId === id ? null : id; renderCardapio(); }
+
+function newTemplate() {
+  const name = prompt('Nome da refeição pronta (ex.: Café da manhã padrão):');
+  if (!name || !name.trim()) return;
+  const t = { id: uid(), name: name.trim(), items: [] };
+  cache.templates.push(t);
+  expandedTplId = t.id;
+  saveToCloud('templates');
+  renderCardapio();
+}
+
+function renameTemplate(id) {
+  const t = cache.templates.find(x => x.id === id);
+  const name = prompt('Novo nome:', t.name);
+  if (!name || !name.trim()) return;
+  t.name = name.trim();
+  saveToCloud('templates');
+  renderCardapio();
+}
+
+function duplicateTemplate(id) {
+  const t = cache.templates.find(x => x.id === id);
+  const copy = { id: uid(), name: t.name + ' (cópia)', items: (t.items || []).map(it => ({ ...it })) };
+  cache.templates.push(copy);
+  expandedTplId = copy.id;
+  saveToCloud('templates');
+  renderCardapio();
+}
+
+function deleteTemplate(id) {
+  const t = cache.templates.find(x => x.id === id);
+  if (!confirm(`Excluir a refeição pronta "${t.name}"? (as refeições já registradas nos dias não mudam)`)) return;
+  cache.templates = cache.templates.filter(x => x.id !== id);
+  saveToCloud('templates');
+  renderCardapio();
 }
 
 /* ══════════════════════════════════
@@ -1284,4 +1477,8 @@ document.addEventListener('click', ev => {
   if (ev.target.classList && ev.target.classList.contains('modal')) {
     ev.target.classList.remove('show');
   }
+});
+
+document.addEventListener('keydown', ev => {
+  if (ev.key === 'Escape') closeDrawer();
 });

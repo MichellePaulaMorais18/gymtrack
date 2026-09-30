@@ -31,7 +31,10 @@
 <!-- ══ APP ══ -->
 <div id="app" style="display:none">
   <header>
-    <div class="header-left"><h1>🏋️ GymTrack</h1></div>
+    <div class="header-left">
+      <button class="btn-icon" onclick="openDrawer()" title="Menu">☰</button>
+      <h1 id="page-title">🏋️ Treino</h1>
+    </div>
     <div class="header-right">
       <button class="btn-icon" id="dark-btn" onclick="toggleDark()" title="Modo escuro">🌙</button>
       <img id="user-avatar" src="" alt="" onclick="signOut()" title="Sair">
@@ -68,7 +71,16 @@
       <div id="water-card"></div>
       <div id="dieta-meals"></div>
       <button class="btn-primary btn-block" onclick="openMealModal()">＋ Adicionar refeição</button>
-      <div id="foods-section"></div>
+      <button class="link-btn" onclick="showTab('cardapio')">🥗 Gerenciar alimentos e refeições prontas →</button>
+    </section>
+
+    <!-- ── TAB: CARDÁPIO ── -->
+    <section id="tab-cardapio" class="tab" style="display:none">
+      <div class="seg-tabs">
+        <button class="seg-tab active" data-sub="templates" onclick="setCardapioSub('templates')">📋 Refeições prontas</button>
+        <button class="seg-tab" data-sub="foods" onclick="setCardapioSub('foods')">🥗 Alimentos</button>
+      </div>
+      <div id="cardapio-content"></div>
     </section>
 
     <!-- ── TAB: BALANÇO ── -->
@@ -106,12 +118,14 @@
     </section>
   </main>
 
-  <nav id="bottom-nav">
-    <button class="nav-btn active" data-tab="treino" onclick="showTab('treino')"><span>🏋️</span>Treino</button>
-    <button class="nav-btn" data-tab="dieta" onclick="showTab('dieta')"><span>🍽️</span>Dieta</button>
-    <button class="nav-btn" data-tab="balanco" onclick="showTab('balanco')"><span>🔥</span>Balanço</button>
-    <button class="nav-btn" data-tab="historico" onclick="showTab('historico')"><span>📅</span>Histórico</button>
-    <button class="nav-btn" data-tab="exercicios" onclick="showTab('exercicios')"><span>📋</span>Exercícios</button>
+  <!-- ── MENU LATERAL (sanfona) ── -->
+  <div id="drawer-overlay" onclick="closeDrawer()"></div>
+  <nav id="side-drawer">
+    <div class="drawer-header">
+      <span>🏋️ GymTrack</span>
+      <button class="btn-icon" onclick="closeDrawer()" title="Fechar">✕</button>
+    </div>
+    <div id="drawer-nav"></div>
   </nav>
 </div>
 
@@ -138,6 +152,8 @@
   <div class="modal-box">
     <button class="modal-close" onclick="closeModal('modal-meal')">✕</button>
     <h3>Adicionar refeição</h3>
+    <div id="modal-meal-templates"></div>
+    <p class="modal-label">Refeição em branco</p>
     <div id="modal-meal-list" class="pick-list"></div>
     <form class="add-form" onsubmit="addMealCustom(event)">
       <input type="text" id="modal-meal-name" placeholder="Ou um nome personalizado...">
@@ -151,6 +167,7 @@
   <div class="modal-box">
     <button class="modal-close" onclick="closeModal('modal-food-picker')">✕</button>
     <h3>Adicionar alimento ao prato</h3>
+    <input type="search" id="food-search" class="search-input" placeholder="🔍 Buscar alimento..." oninput="renderFoodPickerList()">
     <div id="modal-food-list" class="pick-list"></div>
     <button class="btn-primary btn-block" onclick="openFoodForm(null)">＋ Novo alimento</button>
   </div>

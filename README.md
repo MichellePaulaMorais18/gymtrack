@@ -11,6 +11,7 @@ Tracker de academia: registre pesos e repetições de cada treino e acompanhe su
 - **Progressão** — gráfico de carga máxima por treino em cada exercício
 - **Tipos de exercício** — peso × reps, tempo (isometria) e cardio (tempo, velocidade, inclinação)
 - **Dieta** — cadastro de alimentos com calorias e macros por porção; monte o prato de cada refeição e veja a soma por refeição e do dia
+- **Cardápio** — alimentos padronizados (com busca) e refeições prontas para adicionar na Dieta com um toque
 - **Hidratação** — registro de água com meta diária
 - **Balanço** — simulação de gasto calórico (TMB Mifflin-St Jeor + rotina + treino estimado por MET/ACSM), saldo diário, previsão × balança real e leitura de gordura/massa magra pela % de gordura
 - Login com Google + dados na nuvem (Realtime Database) — funciona em qualquer dispositivo
