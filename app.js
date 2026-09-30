@@ -1721,12 +1721,14 @@ function bioFormHtml(rec) {
       <p class="food-hint">Preencha só o que sua balança mostrar. Em cinza, o valor da medição anterior. Para medições mais comparáveis: mesmo horário, em jejum, antes do treino.</p>
       ${BIO_GROUPS.map(g => `
         <p class="bio-group">${g.name}</p>
-        <div class="food-grid bio-grid">
+        <div class="bio-fields">
           ${g.metrics.map(([k, label, unit]) => {
             const val = rec && rec[k] !== undefined ? rec[k] : (!rec && defaults[k] !== undefined ? defaults[k] : '');
             const ph = prevRec[k] !== undefined ? prevRec[k] : '';
-            return `<label>${label}${unit ? ` (${unit})` : ''}${k === 'w' ? ' *' : ''}
-              <input type="number" id="bio-${k}" step="any" min="0" inputmode="decimal" value="${val}" placeholder="${ph}"></label>`;
+            return `<div class="bio-field">
+              <label for="bio-${k}">${label}${k === 'w' ? ' <b>*</b>' : ''}</label>
+              <input type="number" id="bio-${k}" step="any" min="0" inputmode="decimal" value="${val}" placeholder="${ph}">
+              <span class="unit">${unit}</span></div>`;
           }).join('')}
         </div>`).join('')}
       <button class="btn-primary btn-block" onclick="saveBio()">Salvar medição</button>

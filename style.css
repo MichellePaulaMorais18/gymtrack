@@ -102,8 +102,10 @@ header .btn-icon:hover { background: rgba(255,255,255,0.28); }
 /* ══ LAYOUT ══ */
 main { max-width: 680px; margin: 0 auto; padding: 16px 14px 40px; }
 .tab h2 { font-size: 1.15rem; margin-bottom: 14px; }
-.header-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.header-left { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+.header-right { flex-shrink: 0; }
 .header-left h1 { font-size: 1.15rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 400px) { .header-left h1 { font-size: 1rem; } }
 
 /* ══ MENU LATERAL (sanfona) ══ */
 #drawer-overlay {
@@ -350,12 +352,14 @@ body.dark .btn-mini.danger-mini { background: rgba(239,68,68,0.15); }
 .food-row-info { flex: 1; }
 .food-row-info small { color: var(--muted); }
 
-.food-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+/* minmax(0,1fr): sem isso a coluna não encolhe abaixo da largura mínima do input e estoura a tela */
+.food-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; align-items: end; }
 .food-grid label {
-  display: flex; flex-direction: column; gap: 4px;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
   font-size: 0.78rem; color: var(--muted); font-weight: 600;
 }
 .food-grid label:first-child { grid-column: 1 / -1; }
+.food-grid input, .food-grid select { width: 100%; min-width: 0; }
 .food-grid input {
   padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--input-bg); color: var(--text);
@@ -429,8 +433,22 @@ body.dark .btn-mini.danger-mini { background: rgba(239,68,68,0.15); }
 
 /* ══ COMPOSIÇÃO CORPORAL ══ */
 .bio-group { font-weight: 800; font-size: 0.82rem; margin: 14px 0 8px; color: var(--text); }
-.bio-grid label:first-child { grid-column: auto; }
-.bio-grid input::placeholder { color: var(--muted); opacity: 0.55; }
+.bio-fields { margin-bottom: 4px; }
+.bio-field {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 0; border-bottom: 1px dashed var(--border);
+}
+.bio-field:last-child { border-bottom: none; }
+.bio-field label { flex: 1; min-width: 0; font-size: 0.86rem; color: var(--text); }
+.bio-field label b { color: var(--primary); }
+.bio-field input {
+  width: 84px; flex-shrink: 0; padding: 8px; text-align: right;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--input-bg); color: var(--text); font-size: 0.95rem; font-family: inherit;
+}
+.bio-field input:focus { outline: 2px solid var(--primary); border-color: transparent; }
+.bio-field input::placeholder { color: var(--muted); opacity: 0.55; }
+.bio-field .unit { width: 34px; flex-shrink: 0; font-size: 0.75rem; color: var(--muted); }
 .bio-row { font-size: 0.86rem; border-bottom: 1px dashed var(--border); }
 .bio-delta { font-size: 0.75rem; color: var(--muted); font-weight: 700; }
 .bio-delta.good { color: var(--green); }
