@@ -96,6 +96,24 @@
       <div id="bal-content"></div>
     </section>
 
+    <!-- ── TAB: EVOLUÇÃO (mês / ano) ── -->
+    <section id="tab-evolucao" class="tab" style="display:none">
+      <div id="evo-content"></div>
+    </section>
+
+    <!-- ── TAB: COMPOSIÇÃO CORPORAL ── -->
+    <section id="tab-corpo" class="tab" style="display:none">
+      <div class="date-bar">
+        <button class="btn-icon" onclick="shiftDate(-1)">◀</button>
+        <div class="date-center">
+          <input type="date" id="corpo-date" onchange="setDate(this.value)">
+          <span id="corpo-date-label"></span>
+        </div>
+        <button class="btn-icon" onclick="shiftDate(1)">▶</button>
+      </div>
+      <div id="corpo-content"></div>
+    </section>
+
     <!-- ── TAB: HISTÓRICO ── -->
     <section id="tab-historico" class="tab" style="display:none">
       <h2>Histórico de treinos</h2>

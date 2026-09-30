@@ -21,7 +21,7 @@ let cache = {
   nutrition: {},  // {'YYYY-MM-DD': {water: ml, meals: [{id, name, items:[{foodId, qty}]}]}}
   settings:  {},  // {waterGoal: ml}
   profile:   {},  // {sex:'F'|'M', birthYear, height (cm), activity (fator do dia a dia)}
-  weights:   {},  // {'YYYY-MM-DD': {w: kg, bf?: % gordura}}
+  weights:   {},  // {'YYYY-MM-DD': {w: kg, bf?: % gordura, ...demais métricas de BIO_METRICS}}
   templates: []   // refeições prontas: [{id, name, items:[{foodId, qty}]}]
 };
 let currentUid = null;
@@ -222,7 +222,7 @@ const NAV = [
   { group: 'Alimentação', icon: '🍽️', tabs: [
     ['dieta', '🍽️', 'Dieta do dia'], ['cardapio', '🥗', 'Cardápio']] },
   { group: 'Resultados', icon: '📊', tabs: [
-    ['balanco', '🔥', 'Balanço calórico']] }
+    ['balanco', '🔥', 'Balanço calórico'], ['evolucao', '📆', 'Evolução'], ['corpo', '🧬', 'Composição corporal']] }
 ];
 let navClosed = {};
 try { navClosed = JSON.parse(localStorage.getItem('navClosed') || '{}'); } catch (e) {}
@@ -281,6 +281,8 @@ function renderAll() {
   if (currentTab === 'dieta') renderDieta();
   if (currentTab === 'balanco') renderBalanco();
   if (currentTab === 'cardapio') renderCardapio();
+  if (currentTab === 'evolucao') renderEvolucao();
+  if (currentTab === 'corpo') renderCorpo();
   if (currentTab === 'historico') renderHistorico();
   if (currentTab === 'exercicios') renderExercicios();
 }
@@ -1108,7 +1110,9 @@ const MET_PESO    = 5;
 const MET_TEMPO   = 4;
 const MET_CARDIO_SEM_VEL = 6;
 
-let balPeriod = 7;
+let balPeriod = 7;       // aba Balanço: 7 | 30 dias
+let evoPeriod = 'mes';   // aba Evolução: 'mes' | 'ano'
+function activePeriod() { return currentTab === 'evolucao' ? evoPeriod : balPeriod; }
 let profileOpen = false;
 let balChart = null;
 
@@ -1213,7 +1217,9 @@ function renderBalanco() {
   }
 
   balMemo = new Map();
-  wrap.innerHTML = weightCardHtml() + dayCardHtml() + trendCardHtml() + profileCardHtml(profileOpen);
+  wrap.innerHTML = weightCardHtml() + dayCardHtml() + trendCardHtml([7, 30], '📈 Tendência') +
+    `<button class="link-btn" onclick="showTab('evolucao')">📆 Ver evolução mensal e anual →</button>` +
+    profileCardHtml(profileOpen);
   drawBalChart();
   balMemo = null;
 }
@@ -1234,6 +1240,8 @@ function weightCardHtml() {
         <button class="btn-primary" onclick="saveWeight()">Salvar</button>
       </div>
       ${lastTxt}
+      <button class="link-btn left" onclick="showTab('corpo')">🧬 ${today && Object.keys(today).length > 2
+        ? `Ver bioimpedância completa (${Object.keys(today).length} métricas) →` : 'Registrar bioimpedância completa →'}</button>
     </div>`;
 }
 
@@ -1242,8 +1250,9 @@ function saveWeight() {
   const w = num('bal-w'), bf = num('bal-bf');
   if (!w) { alert('Informe o peso em kg.'); return; }
   if (!cache.weights) cache.weights = {};
-  const entry = { w };
-  if (bf) entry.bf = bf;  // RTDB não aceita campos undefined
+  // Mescla com o registro do dia para não apagar as métricas da bioimpedância
+  const entry = { ...(cache.weights[currentDate] || {}), w };
+  if (bf) entry.bf = bf; else delete entry.bf;  // RTDB não aceita campos undefined
   cache.weights[currentDate] = entry;
   saveToCloud('weights');
   renderBalanco();
@@ -1309,22 +1318,23 @@ function capToday(dates) { const t = toDateStr(new Date()); return dates.filter(
 function periodRange() {
   const cd = parseDate(currentDate);
   const y = cd.getFullYear(), m = cd.getMonth();
-  if (balPeriod === 'mes') {
+  const per = activePeriod();
+  if (per === 'mes') {
     const py = m ? y : y - 1, pm = m ? m - 1 : 11;
     return { dates: capToday(monthDates(y, m)), prev: capToday(monthDates(py, pm)),
              label: `${MONTHS[m]} de ${y}`, prevName: 'mês anterior',
              colPrev: `${MONTHS_SHORT[pm]}/${String(py).slice(2)}`, colNow: `${MONTHS_SHORT[m]}/${String(y).slice(2)}`, nav: true };
   }
-  if (balPeriod === 'ano') {
+  if (per === 'ano') {
     const yearDates = yy => Array.from({ length: 12 }, (_, mm) => monthDates(yy, mm)).flat();
     return { dates: capToday(yearDates(y)), prev: capToday(yearDates(y - 1)),
              label: String(y), prevName: 'ano anterior', colPrev: String(y - 1), colNow: String(y), nav: true };
   }
-  const dates = periodDates(currentDate, balPeriod);
+  const dates = periodDates(currentDate, per);
   const before = parseDate(dates[0]);
   before.setDate(before.getDate() - 1);
-  return { dates, prev: periodDates(toDateStr(before), balPeriod),
-           label: `Últimos ${balPeriod} dias`, prevName: `${balPeriod} dias anteriores`,
+  return { dates, prev: periodDates(toDateStr(before), per),
+           label: `Últimos ${per} dias`, prevName: `${per} dias anteriores`,
            colPrev: 'Antes', colNow: 'Agora', nav: false };
 }
 
@@ -1332,11 +1342,11 @@ function shiftPeriod(dir) {
   const d = parseDate(currentDate);
   const day = d.getDate();
   d.setDate(1);
-  if (balPeriod === 'mes') d.setMonth(d.getMonth() + dir);
+  if (activePeriod() === 'mes') d.setMonth(d.getMonth() + dir);
   else d.setFullYear(d.getFullYear() + dir);
   d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
   currentDate = toDateStr(d);
-  renderBalanco();
+  renderAll();
 }
 
 function periodStats(dates) {
@@ -1379,16 +1389,19 @@ function periodStats(dates) {
   };
 }
 
-function trendCardHtml() {
+const PERIOD_LABELS = { 7: '7 dias', 30: '30 dias', mes: 'Mês', ano: 'Ano' };
+
+function trendCardHtml(modes, title) {
   const range = periodRange();
   const s = periodStats(range.dates);
   const p = periodStats(range.prev);
   lastTrend = { s, range };
+  const per = activePeriod();
 
-  const tabs = [[7, '7 dias'], [30, '30 dias'], ['mes', 'Mês'], ['ano', 'Ano']].map(([v, l]) =>
-    `<button class="period-btn ${balPeriod === v ? 'active' : ''}" onclick="setBalPeriod(${typeof v === 'string' ? `'${v}'` : v})">${l}</button>`).join('');
+  const tabs = modes.map(v =>
+    `<button class="period-btn ${per === v ? 'active' : ''}" onclick="setBalPeriod(${typeof v === 'string' ? `'${v}'` : v})">${PERIOD_LABELS[v]}</button>`).join('');
   const head = `
-    <div class="entry-head"><span class="entry-name">📈 Tendência</span></div>
+    <div class="entry-head"><span class="entry-name">${title}</span></div>
     <div class="period-tabs full">${tabs}</div>
     ${range.nav ? `
       <div class="period-nav">
@@ -1421,14 +1434,33 @@ function trendCardHtml() {
       ${head}
       <div class="bal-sub">${s.n} de ${s.dates.length} dias com alimentação registrada · ${s.trainedDays} dias de treino</div>
       ${chips}
-      <canvas id="bal-chart"></canvas>
-      ${balPeriod === 'ano' ? monthTableHtml(s.dates) : ''}
+      <canvas id="trend-chart-${currentTab}" class="trend-chart"></canvas>
+      ${per === 'ano' ? monthTableHtml(s.dates) : ''}
       ${compareHtml(s, p, range)}
       <div class="bal-insights">${insights(s).map(t => `<p>${t}</p>`).join('')}</div>
     </div>`;
 }
 
-function setBalPeriod(p) { balPeriod = p; renderBalanco(); }
+function setBalPeriod(p) {
+  if (currentTab === 'evolucao') evoPeriod = p; else balPeriod = p;
+  renderAll();
+}
+
+/* ══════════════════════════════════
+   TAB: EVOLUÇÃO — visão mensal e anual
+══════════════════════════════════ */
+function renderEvolucao() {
+  const wrap = document.getElementById('evo-content');
+  if (!profileComplete() || !Object.keys(cache.weights || {}).length) {
+    wrap.innerHTML = `<div class="bal-note">Para ver sua evolução, preencha o perfil e registre ao menos uma pesagem na aba
+      <a href="#" onclick="showTab('balanco');return false">🔥 Balanço calórico</a>.</div>`;
+    return;
+  }
+  balMemo = new Map();
+  wrap.innerHTML = trendCardHtml(['mes', 'ano'], '📆 Evolução') + bodyTrendCardHtml();
+  drawBalChart();
+  balMemo = null;
+}
 
 // Tabela: este período × o anterior (médias por dia, então meses/anos incompletos comparam de forma justa)
 function compareHtml(s, p, range) {
@@ -1440,8 +1472,10 @@ function compareHtml(s, p, range) {
     ['Saldo (kcal/dia)', p.avgSaldo, s.avgSaldo, v => fmtSigned(v), 0],
     ['Proteína (g/kg)', p.protKg, s.protKg, v => fmtNum(Math.round(v * 10) / 10), 1],
     ['Treinos/semana', perWeek(p), perWeek(s), v => fmtNum(Math.round(v * 10) / 10), 1],
-    ['Peso (últ. pesagem)', p.lastW ? p.lastW.w : null, s.lastW ? s.lastW.w : null, v => fmtNum(v) + 'kg', 1]
-  ];
+    ['Peso (últ. pesagem)', p.lastW ? p.lastW.w : null, s.lastW ? s.lastW.w : null, v => fmtNum(v) + 'kg', 1],
+    ['% gordura (últ.)', lastMetricIn(p.dates, 'bf'), lastMetricIn(s.dates, 'bf'), v => fmtNum(Math.round(v * 10) / 10) + '%', 1],
+    ['Massa muscular (últ.)', lastMetricIn(p.dates, 'muscleKg'), lastMetricIn(s.dates, 'muscleKg'), v => fmtNum(Math.round(v * 10) / 10) + 'kg', 1]
+  ].filter(([, a, b], i) => i < 6 || a !== null || b !== null);
   return `
     <p class="cmp-title">📅 Comparado ao ${range.prevName}</p>
     <div class="table-wrap">
@@ -1461,20 +1495,23 @@ function compareHtml(s, p, range) {
 function monthTableHtml(dates) {
   const byMonth = {};
   dates.forEach(d => (byMonth[d.slice(0, 7)] = byMonth[d.slice(0, 7)] || []).push(d));
+  const hasBf = lastMetricIn(dates, 'bf') !== null;
   const rows = Object.keys(byMonth).sort().map(k => {
     const ms = periodStats(byMonth[k]);
     const name = MONTHS_SHORT[Number(k.slice(5, 7)) - 1];
-    if (!ms.n) return `<tr class="muted-row"><td>${name}</td><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`;
+    const bf = lastMetricIn(byMonth[k], 'bf');
+    const bfCell = hasBf ? `<td>${bf !== null ? fmtNum(Math.round(bf * 10) / 10) + '%' : '—'}</td>` : '';
+    if (!ms.n) return `<tr class="muted-row"><td>${name}</td><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td>${bfCell}</tr>`;
     const cls = ms.avgSaldo < -100 ? 'deficit' : ms.avgSaldo > 100 ? 'superavit' : '';
     return `<tr><td>${name}</td><td>${ms.n}</td><td>${fmtKcal(ms.avgIn)}</td><td>${fmtKcal(ms.avgOut)}</td>
       <td class="${cls}"><b>${fmtSigned(ms.avgSaldo)}</b></td>
-      <td>${ms.realDelta !== null ? fmtSigned(ms.realDelta, 1) + 'kg' : '—'}</td></tr>`;
+      <td>${ms.realDelta !== null ? fmtSigned(ms.realDelta, 1) + 'kg' : '—'}</td>${bfCell}</tr>`;
   }).join('');
   return `
     <p class="cmp-title">🗓️ Mês a mês <small>(médias por dia registrado)</small></p>
     <div class="table-wrap">
       <table class="cmp-table month-table">
-        <thead><tr><th>Mês</th><th>Dias</th><th>Ingerido</th><th>Gasto</th><th>Saldo</th><th>Balança</th></tr></thead>
+        <thead><tr><th>Mês</th><th>Dias</th><th>Ingerido</th><th>Gasto</th><th>Saldo</th><th>Balança</th>${hasBf ? '<th>% gord.</th>' : ''}</tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
@@ -1526,7 +1563,7 @@ function insights(s) {
 
 // Gráfico: peso real × peso previsto pela simulação
 function drawBalChart() {
-  const canvas = document.getElementById('bal-chart');
+  const canvas = document.getElementById('trend-chart-' + currentTab);
   if (balChart) { balChart.destroy(); balChart = null; }
   if (!canvas || !lastTrend) return;
   const s = lastTrend.s;
@@ -1541,7 +1578,7 @@ function drawBalChart() {
   let predData = pred;
 
   // Modo Ano: um ponto por mês (última pesagem do mês; simulação no fim do mês)
-  if (balPeriod === 'ano') {
+  if (activePeriod() === 'ano') {
     const months = [...new Set(s.dates.map(d => d.slice(0, 7)))];
     labels = months.map(k => MONTHS_SHORT[Number(k.slice(5, 7)) - 1]);
     real = months.map(k => {
@@ -1606,6 +1643,292 @@ function saveProfile() {
   saveToCloud('profile');
   profileOpen = false;
   renderBalanco();
+}
+
+/* ══════════════════════════════════
+   TAB: COMPOSIÇÃO CORPORAL — bioimpedância
+══════════════════════════════════ */
+// [chave, nome, unidade, casas decimais, direção boa: +1 subir é bom, -1 descer é bom, 0 neutro]
+const BIO_GROUPS = [
+  { name: '⚖️ Geral', metrics: [
+    ['w', 'Peso', 'kg', 1, 0], ['imc', 'IMC', '', 1, 0], ['height', 'Altura', 'cm', 0, 0], ['age', 'Idade real', 'anos', 0, 0]] },
+  { name: '🧈 Gordura', metrics: [
+    ['bf', 'Percentual de gordura', '%', 1, -1], ['fatKg', 'Peso da gordura', 'kg', 1, -1],
+    ['visceral', 'Gordura visceral', '', 1, -1], ['obesity', 'Percentual de obesidade', '%', 1, -1]] },
+  { name: '💪 Músculo e massa magra', metrics: [
+    ['musclePct', 'Percentual de massa muscular', '%', 1, 1], ['muscleKg', 'Peso da massa muscular', 'kg', 1, 1],
+    ['smm', 'Massa muscular esquelética', 'kg', 1, 1], ['muscleRate', 'Registro de massa muscular', '%', 1, 1],
+    ['lbm', 'LBM (massa magra)', 'kg', 1, 1], ['bone', 'Ossos', 'kg', 1, 0], ['protein', 'Proteína', '%', 1, 1]] },
+  { name: '💧 Água', metrics: [
+    ['waterPct', 'Percentual de água', '%', 1, 0], ['waterKg', 'Peso da água', 'kg', 1, 0]] },
+  { name: '🔥 Metabolismo', metrics: [
+    ['bmr', 'Metabolismo', 'kcal', 0, 0], ['metaAge', 'Idade metabólica', 'anos', 0, -1]] }
+];
+const BIO_METRICS = BIO_GROUPS.flatMap(g =>
+  g.metrics.map(([k, label, unit, dec, good]) => ({ k, label, unit, dec, good, group: g.name })));
+const bioMetric = k => BIO_METRICS.find(m => m.k === k);
+
+let bioEditing = false;
+let bioChartKey = 'bf';
+let bioChartRange = 'tudo';
+let bioCmp = { a: null, b: null };
+let bodyChart = null;
+
+function fmtBio(m, v) {
+  if (v === undefined || v === null || v === '') return '—';
+  const n = Math.round(Number(v) * 10 ** m.dec) / 10 ** m.dec;
+  return (m.k === 'bmr' ? n.toLocaleString('pt-BR') : fmtNum(n)) + (m.unit && m.unit !== '%' ? ' ' + m.unit : m.unit);
+}
+
+function fmtBioDelta(m, d) {
+  const cls = !m.good || Math.abs(d) < 1e-9 ? '' : (d * m.good > 0 ? 'good' : 'bad');
+  return `<span class="bio-delta ${cls}">${fmtSigned(d, m.dec)}</span>`;
+}
+
+function bioDates() { return Object.keys(cache.weights || {}).sort(); }
+
+// Valor mais recente de uma métrica em uma lista de datas (ou null)
+function lastMetricIn(dates, key) {
+  for (let i = dates.length - 1; i >= 0; i--) {
+    const r = cache.weights[dates[i]];
+    if (r && r[key] !== undefined) return Number(r[key]);
+  }
+  return null;
+}
+
+function renderCorpo() {
+  document.getElementById('corpo-date').value = currentDate;
+  document.getElementById('corpo-date-label').textContent = fmtDateLong(currentDate);
+  const wrap = document.getElementById('corpo-content');
+  const rec = (cache.weights || {})[currentDate];
+  wrap.innerHTML = (rec && !bioEditing ? bioViewHtml(rec) : bioFormHtml(rec)) +
+    bioChartCardHtml() + bioCompareCardHtml() + bioHistoryHtml();
+  drawBodyChart();
+}
+
+/* ── Medição do dia: formulário ── */
+function bioFormHtml(rec) {
+  const prevDates = bioDates().filter(d => d < currentDate);
+  const prevRec = prevDates.length ? cache.weights[prevDates[prevDates.length - 1]] : {};
+  const p = cache.profile || {};
+  const defaults = { height: p.height, age: p.birthYear ? Number(currentDate.slice(0, 4)) - Number(p.birthYear) : undefined };
+  return `
+    <div class="entry-card">
+      <div class="entry-head">
+        <span class="entry-name">🧬 ${rec ? 'Editar medição' : 'Nova medição'} de ${fmtDateShort(currentDate)}</span>
+        ${rec ? `<button class="btn-tiny" title="Cancelar" onclick="bioEditing=false;renderCorpo()">✕</button>` : ''}
+      </div>
+      <p class="food-hint">Preencha só o que sua balança mostrar. Em cinza, o valor da medição anterior. Para medições mais comparáveis: mesmo horário, em jejum, antes do treino.</p>
+      ${BIO_GROUPS.map(g => `
+        <p class="bio-group">${g.name}</p>
+        <div class="food-grid bio-grid">
+          ${g.metrics.map(([k, label, unit]) => {
+            const val = rec && rec[k] !== undefined ? rec[k] : (!rec && defaults[k] !== undefined ? defaults[k] : '');
+            const ph = prevRec[k] !== undefined ? prevRec[k] : '';
+            return `<label>${label}${unit ? ` (${unit})` : ''}${k === 'w' ? ' *' : ''}
+              <input type="number" id="bio-${k}" step="any" min="0" inputmode="decimal" value="${val}" placeholder="${ph}"></label>`;
+          }).join('')}
+        </div>`).join('')}
+      <button class="btn-primary btn-block" onclick="saveBio()">Salvar medição</button>
+    </div>`;
+}
+
+function saveBio() {
+  const entry = {};
+  BIO_METRICS.forEach(m => {
+    const raw = String(document.getElementById('bio-' + m.k).value).replace(',', '.').trim();
+    if (raw !== '' && !isNaN(parseFloat(raw))) entry[m.k] = parseFloat(raw);
+  });
+  if (!entry.w) { alert('Informe pelo menos o peso.'); return; }
+  cache.weights[currentDate] = entry;
+  saveToCloud('weights');
+  bioEditing = false;
+  bioCmp = { a: null, b: null };  // volta a comparar primeira × mais recente
+  renderCorpo();
+}
+
+function deleteBio() {
+  if (!confirm(`Apagar a medição de ${fmtDateShort(currentDate)} (peso e todas as métricas)?`)) return;
+  delete cache.weights[currentDate];
+  saveToCloud('weights');
+  bioEditing = false;
+  bioCmp = { a: null, b: null };
+  renderCorpo();
+}
+
+/* ── Medição do dia: visualização ── */
+function bioViewHtml(rec) {
+  const prevDates = bioDates().filter(d => d < currentDate);
+  // Cada métrica compara com o último valor registrado DELA (pesagens rápidas só têm peso/% gordura)
+  const prev = {};
+  BIO_METRICS.forEach(m => { const v = lastMetricIn(prevDates, m.k); if (v !== null) prev[m.k] = v; });
+  const hasPrev = Object.keys(prev).length > 0;
+  return `
+    <div class="entry-card">
+      <div class="entry-head">
+        <span class="entry-name">🧬 Medição de ${fmtDateShort(currentDate)}</span>
+        <div class="hist-actions">
+          <button class="btn-tiny" title="Editar" onclick="bioEditing=true;renderCorpo()">✏️</button>
+          <button class="btn-tiny danger" title="Apagar" onclick="deleteBio()">🗑</button>
+        </div>
+      </div>
+      ${hasPrev ? `<p class="bal-sub">Δ = diferença para o último valor anterior de cada métrica · <span class="bio-delta good">verde</span> na direção boa, <span class="bio-delta bad">vermelho</span> na direção ruim</p>` : ''}
+      ${BIO_GROUPS.map(g => {
+        const rows = g.metrics.filter(([k]) => rec[k] !== undefined).map(([k]) => {
+          const m = bioMetric(k);
+          const d = prev[k] !== undefined ? fmtBioDelta(m, rec[k] - prev[k]) : '';
+          return `<div class="bal-row bio-row"><span>${m.label}</span><span><b>${fmtBio(m, rec[k])}</b> ${d}</span></div>`;
+        }).join('');
+        return rows ? `<p class="bio-group">${g.name}</p>${rows}` : '';
+      }).join('')}
+    </div>`;
+}
+
+/* ── Gráfico de uma métrica ao longo do tempo ── */
+function bioSeries(key) {
+  let dates = bioDates().filter(d => cache.weights[d][key] !== undefined);
+  if (bioChartRange !== 'tudo') {
+    const from = parseDate(toDateStr(new Date()));
+    from.setMonth(from.getMonth() - Number(bioChartRange));
+    dates = dates.filter(d => d >= toDateStr(from));
+  }
+  return dates.map(d => ({ date: d, v: Number(cache.weights[d][key]) }));
+}
+
+function bioChartCardHtml() {
+  const available = BIO_METRICS.filter(m => bioDates().some(d => cache.weights[d][m.k] !== undefined));
+  if (!available.length) return '';
+  if (!available.some(m => m.k === bioChartKey)) bioChartKey = available[0].k;
+  const m = bioMetric(bioChartKey);
+  const series = bioSeries(bioChartKey);
+  const ranges = [['3', '3 meses'], ['6', '6 meses'], ['12', '1 ano'], ['tudo', 'Tudo']].map(([v, l]) =>
+    `<button class="period-btn ${bioChartRange === v ? 'active' : ''}" onclick="bioChartRange='${v}';renderCorpo()">${l}</button>`).join('');
+  let stats = '<p class="bal-sub">Sem medições dessa métrica no intervalo.</p>';
+  if (series.length) {
+    const vals = series.map(x => x.v);
+    const first = series[0], last = series[series.length - 1];
+    stats = `
+      <div class="bal-grid">
+        <div class="sum-chip"><b>${fmtBio(m, first.v)}</b><small>primeira (${fmtDateShort(first.date)})</small></div>
+        <div class="sum-chip"><b>${fmtBio(m, last.v)}</b><small>última (${fmtDateShort(last.date)})</small></div>
+        <div class="sum-chip"><b>${series.length > 1 ? fmtBioDelta(m, last.v - first.v) : '—'}</b><small>variação</small></div>
+        <div class="sum-chip"><b>${fmtBio(m, Math.min(...vals))}</b><small>mínimo</small></div>
+        <div class="sum-chip"><b>${fmtBio(m, Math.max(...vals))}</b><small>máximo</small></div>
+        <div class="sum-chip"><b>${series.length}</b><small>medições</small></div>
+      </div>`;
+  }
+  return `
+    <div class="entry-card">
+      <div class="entry-head"><span class="entry-name">📈 Evolução da métrica</span></div>
+      <select class="bio-select" onchange="bioChartKey=this.value;renderCorpo()">
+        ${BIO_GROUPS.map(g => {
+          const opts = g.metrics.filter(([k]) => available.some(a => a.k === k))
+            .map(([k, label]) => `<option value="${k}" ${k === bioChartKey ? 'selected' : ''}>${label}</option>`).join('');
+          return opts ? `<optgroup label="${g.name}">${opts}</optgroup>` : '';
+        }).join('')}
+      </select>
+      <div class="period-tabs full">${ranges}</div>
+      ${series.length > 1 ? '<canvas id="body-chart"></canvas>' : ''}
+      ${stats}
+    </div>`;
+}
+
+function drawBodyChart() {
+  if (bodyChart) { bodyChart.destroy(); bodyChart = null; }
+  const canvas = document.getElementById('body-chart');
+  if (!canvas) return;
+  const m = bioMetric(bioChartKey);
+  const series = bioSeries(bioChartKey);
+  bodyChart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: series.map(x => fmtDateShort(x.date)),
+      datasets: [{ label: m.label, data: series.map(x => x.v), borderColor: '#ea580c',
+                   backgroundColor: 'rgba(234,88,12,0.12)', fill: true, tension: 0.25, pointRadius: 4 }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: { y: { ticks: { callback: v => fmtNum(v) + (m.unit === '%' ? '%' : '') } }, x: { ticks: { maxTicksLimit: 8 } } }
+    }
+  });
+}
+
+/* ── Comparar duas medições ── */
+function bioCompareTable(recA, recB, labelA, labelB) {
+  const rows = BIO_METRICS.filter(m => recA[m.k] !== undefined || recB[m.k] !== undefined).map(m => `
+    <tr><td>${m.label}</td>
+      <td>${fmtBio(m, recA[m.k])}</td>
+      <td><b>${fmtBio(m, recB[m.k])}</b></td>
+      <td>${recA[m.k] !== undefined && recB[m.k] !== undefined ? fmtBioDelta(m, recB[m.k] - recA[m.k]) : '—'}</td></tr>`).join('');
+  return `
+    <div class="table-wrap">
+      <table class="cmp-table">
+        <thead><tr><th></th><th>${labelA}</th><th>${labelB}</th><th>Δ</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function bioCompareCardHtml() {
+  const dates = bioDates();
+  if (dates.length < 2) return '';
+  if (!dates.includes(bioCmp.a)) bioCmp.a = dates[0];
+  if (!dates.includes(bioCmp.b)) bioCmp.b = dates[dates.length - 1];
+  const opt = sel => dates.map(d => `<option value="${d}" ${d === sel ? 'selected' : ''}>${fmtDateShort(d)}/${d.slice(2, 4)}</option>`).join('');
+  return `
+    <div class="entry-card">
+      <div class="entry-head"><span class="entry-name">🔄 Comparar medições</span></div>
+      <div class="cmp-pickers">
+        <select class="bio-select" onchange="bioCmp.a=this.value;renderCorpo()">${opt(bioCmp.a)}</select>
+        <span>→</span>
+        <select class="bio-select" onchange="bioCmp.b=this.value;renderCorpo()">${opt(bioCmp.b)}</select>
+      </div>
+      ${bioCompareTable(cache.weights[bioCmp.a], cache.weights[bioCmp.b], fmtDateShort(bioCmp.a), fmtDateShort(bioCmp.b))}
+    </div>`;
+}
+
+/* ── Histórico de medições ── */
+function bioHistoryHtml() {
+  const dates = bioDates().reverse();
+  if (!dates.length) return '';
+  return `
+    <div class="entry-card">
+      <div class="entry-head"><span class="entry-name">🗂️ Histórico de medições</span></div>
+      ${dates.map(d => {
+        const r = cache.weights[d];
+        const extra = [r.bf !== undefined ? fmtNum(r.bf) + '% gord.' : '', r.muscleKg !== undefined ? fmtNum(r.muscleKg) + 'kg músc.' : '']
+          .filter(Boolean).join(' · ');
+        return `
+          <div class="hist-line bio-hist ${d === currentDate ? 'current' : ''}" onclick="bioEditing=false;setDate('${d}');window.scrollTo(0,0)">
+            <b>${fmtDateShort(d)}/${d.slice(2, 4)}</b> — ${fmtNum(r.w)}kg${extra ? ' · ' + extra : ''}
+            <small>${Object.keys(r).length} métricas</small>
+          </div>`;
+      }).join('')}
+    </div>`;
+}
+
+/* ── Evolução: composição corporal no período (1ª × última medição) ── */
+function bodyTrendCardHtml() {
+  if (!lastTrend) return '';
+  const dates = lastTrend.range.dates;
+  const inPeriod = dates.length ? bioDates().filter(d => d >= dates[0] && d <= dates[dates.length - 1]) : [];
+  const withBio = inPeriod.filter(d => Object.keys(cache.weights[d]).length > 2);
+  let body;
+  if (withBio.length >= 2) {
+    const a = withBio[0], b = withBio[withBio.length - 1];
+    body = `<p class="bal-sub">Primeira × última medição de bioimpedância do período.</p>
+      ${bioCompareTable(cache.weights[a], cache.weights[b], fmtDateShort(a), fmtDateShort(b))}`;
+  } else {
+    body = `<p class="bal-sub">São necessárias pelo menos 2 medições de bioimpedância no período para comparar
+      (${withBio.length} encontrada${withBio.length === 1 ? '' : 's'}).
+      <a href="#" onclick="showTab('corpo');return false">Registrar medição →</a></p>`;
+  }
+  return `
+    <div class="entry-card">
+      <div class="entry-head"><span class="entry-name">🧬 Composição corporal · ${lastTrend.range.label}</span></div>
+      ${body}
+    </div>`;
 }
 
 /* ══════════════════════════════════
