@@ -725,35 +725,11 @@ function renderDieta() {
   const day = dayNutri(currentDate) || { water: 0, meals: [] };
   const meals = day.meals || [];
 
-  // Resumo do dia
-  const summary = document.getElementById('dieta-summary');
-  if (meals.length) {
-    const t = dayMacros(day);
-    summary.innerHTML = NUTRIENTS.map(n => `
-      <div class="sum-chip"><b>${fmtG(t[n.k])}${n.unit}</b><small>${n.chip}</small></div>`).join('');
-  } else summary.innerHTML = '';
-
-  // Hidratação
-  const water = Number(day.water) || 0;
-  const goal = waterGoal();
-  const pct = Math.min(100, Math.round(water / goal * 100));
-  document.getElementById('water-card').innerHTML = `
-    <div class="entry-card">
-      <div class="entry-head">
-        <span class="entry-name">💧 Hidratação</span>
-        <button class="btn-mini" onclick="setWaterGoal()" title="Alterar meta">meta: ${goal}ml</button>
-      </div>
-      <div class="water-bar"><div class="water-fill" style="width:${pct}%"></div></div>
-      <div class="water-row">
-        <b>${water}ml <small class="water-pct">(${pct}%)</small></b>
-        <div class="water-btns">
-          <button class="btn-mini" onclick="addWater(-200)">−200</button>
-          <button class="btn-mini" onclick="addWater(200)">＋200</button>
-          <button class="btn-mini" onclick="addWater(300)">＋300</button>
-          <button class="btn-mini" onclick="addWater(500)">＋500</button>
-        </div>
-      </div>
-    </div>`;
+  document.getElementById('dieta-week').innerHTML = weekStripHtml();
+  document.getElementById('dieta-gauge').innerHTML = gaugeCardHtml();
+  document.getElementById('water-card').innerHTML = waterCardHtml();
+  document.getElementById('dieta-track').innerHTML = trackCardHtml();
+  drawTrackChart();
 
   // Refeições
   const wrap = document.getElementById('dieta-meals');
@@ -823,13 +799,361 @@ function addWater(ml) {
   saveNutrition(); renderDieta();
 }
 
-function setWaterGoal() {
-  const v = parseInt(prompt('Meta diária de água (ml):', waterGoal()));
-  if (!v || v <= 0) return;
+/* ══ Metas, medidor de calorias, faixa da semana e acompanhamento ══ */
+const MACRO_GOALS = [
+  { k: 'carb', label: 'Carboidratos', color: '#f5b13d' },
+  { k: 'prot', label: 'Proteína', color: '#5b8def' },
+  { k: 'gord', label: 'Gordura', color: '#e0614a' }
+];
+const WEEKDAYS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
+let trackMode = 'dia';
+let trackChart = null;
+
+function dietGoals() { return (cache.settings && cache.settings.goals) || {}; }
+function dayKcal(date) { const d = dayNutri(date); return d ? dayMacros(d).kcal : 0; }
+function dayLogged(date) { const d = dayNutri(date); return !!(d && (d.meals || []).some(m => (m.items || []).length)); }
+function dayWater(date) { const d = dayNutri(date); return d ? Number(d.water) || 0 : 0; }
+
+// Gasto do treino do dia (mesma estimativa do Balanço); null se não treinou ou sem peso registrado
+function exerciseKcal(date) {
+  const s = getSession(date);
+  const w = weightOn(date);
+  if (!s || !s.entries.length || !w) return null;
+  return s.entries.reduce((t, e) => t + entryKcal(e, Number(w.w)), 0);
+}
+
+// Alvo do dia = meta + gasto do treino (mesma conta do medidor)
+function dayTarget(date) {
+  const g = dietGoals();
+  return g.kcal ? g.kcal + (exerciseKcal(date) || 0) : 0;
+}
+
+function weekDates(date) {
+  const d = parseDate(date);
+  d.setDate(d.getDate() - (d.getDay() + 6) % 7);
+  return Array.from({ length: 7 }, (_, i) => { const x = new Date(d); x.setDate(d.getDate() + i); return toDateStr(x); });
+}
+
+// Anel de progresso (0 a 1); passar da meta fica vermelho só quando isso é ruim (calorias, não água)
+function ringSvg(frac, size, color, overIsBad = true) {
+  const r = (size - 5) / 2, c = 2 * Math.PI * r;
+  const over = overIsBad && frac > 1.05;
+  const f = Math.max(0, Math.min(1, frac));
+  return `<svg class="ring" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--border)" stroke-width="3.5"/>
+    ${f > 0 ? `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${over ? 'var(--red)' : color}" stroke-width="3.5"
+      stroke-linecap="round" stroke-dasharray="${(f * c).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${size / 2} ${size / 2})"/>` : ''}
+  </svg>`;
+}
+
+function weekStripHtml() {
+  const g = dietGoals();
+  const today = toDateStr(new Date());
+  return `<div class="week-strip">${weekDates(currentDate).map((d, i) => {
+    const frac = d > today ? 0 : g.kcal ? dayKcal(d) / dayTarget(d) : (dayLogged(d) ? 1 : 0);
+    return `<button class="week-day ${d === currentDate ? 'active' : ''} ${d === today ? 'today' : ''}" onclick="setDate('${d}')">
+      <span>${WEEKDAYS[i]}</span><b>${d.slice(8)}</b>${ringSvg(frac, 26, 'var(--primary)')}</button>`;
+  }).join('')}</div>`;
+}
+
+function macroBarsHtml(t, g) {
+  return `<div class="macro-bars">${MACRO_GOALS.map(m => {
+    const goal = Number(g[m.k]) || 0;
+    const pct = goal ? Math.min(100, t[m.k] / goal * 100) : 0;
+    return `<div class="macro-bar">
+      <span class="macro-name">${m.label}</span>
+      <div class="macro-track"><div class="macro-fill" style="width:${pct}%;background:${m.color}"></div></div>
+      <span class="macro-val"><b>${fmtG(t[m.k])}g</b>${goal ? ` / ${fmtG(goal)}g` : ''}</span>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function gaugeCardHtml() {
+  const g = dietGoals();
+  const t = dayMacros(dayNutri(currentDate) || { meals: [] });
+  const extras = `<p class="gauge-extra">Fibra ${fmtG(t.fib)}g · Açúcar ${fmtG(t.acuc)}g · Sódio ${fmtG(t.sodio)}mg</p>`;
+  if (!g.kcal) {
+    return `
+      <div class="entry-card">
+        <div class="entry-head"><span class="entry-name">🎯 Metas do dia</span></div>
+        <p class="bal-sub">Hoje: <b>${fmtKcal(t.kcal)} kcal</b> · P ${fmtG(t.prot)}g · C ${fmtG(t.carb)}g · G ${fmtG(t.gord)}g</p>
+        <button class="btn-primary btn-block" onclick="openGoals()">🎯 Definir metas de calorias e macros</button>
+        ${extras}
+      </div>`;
+  }
+  const ex = exerciseKcal(currentDate);
+  const remaining = g.kcal - t.kcal + (ex || 0);
+  const frac = Math.min(1, t.kcal / (g.kcal + (ex || 0)));
+  const over = remaining < 0;
+  // Arco de 180°: da esquerda (vazio) para a direita (meta atingida)
+  const R = 90, L = Math.PI * R, theta = Math.PI - Math.PI * frac;
+  const dotX = 110 + R * Math.cos(theta), dotY = 110 - R * Math.sin(theta);
+  return `
+    <div class="entry-card">
+      <div class="entry-head">
+        <span class="entry-name">🎯 Metas do dia</span>
+        <button class="btn-tiny" title="Editar metas" onclick="openGoals()">✏️</button>
+      </div>
+      <div class="gauge">
+        <svg viewBox="0 0 220 122" class="gauge-svg">
+          <path d="M20 110 A90 90 0 0 1 200 110" fill="none" stroke="var(--primary-soft)" stroke-width="16" stroke-linecap="round"/>
+          ${frac > 0 ? `<path d="M20 110 A90 90 0 0 1 200 110" fill="none" stroke="${over ? 'var(--red)' : 'var(--primary)'}" stroke-width="16"
+            stroke-linecap="round" stroke-dasharray="${(frac * L).toFixed(1)} ${L.toFixed(1)}"/>
+          <circle cx="${dotX.toFixed(1)}" cy="${dotY.toFixed(1)}" r="5" fill="#fff" stroke="${over ? 'var(--red)' : 'var(--primary)'}" stroke-width="2"/>` : ''}
+        </svg>
+        <div class="gauge-center ${over ? 'over' : ''}">
+          <small>${over ? 'Excedeu' : 'Restam'}</small>
+          <b>${fmtKcal(Math.abs(remaining))}</b>
+          <small>kcal</small>
+        </div>
+      </div>
+      <p class="gauge-formula">Restante = Meta − Dieta + Exercício</p>
+      <div class="gauge-row">
+        <div><small>🎯 Meta</small><b>${fmtKcal(g.kcal)}</b></div>
+        <span>−</span>
+        <div><small>🍽️ Dieta</small><b>${fmtKcal(t.kcal)}</b></div>
+        <span>+</span>
+        <div><small>🔥 Exercício</small><b>${ex ? fmtKcal(ex) : '--'}</b></div>
+      </div>
+      ${macroBarsHtml(t, g)}
+      ${extras}
+    </div>`;
+}
+
+/* ── Água ── */
+function waterStreak(date) {
+  const goal = waterGoal();
+  const d = parseDate(date);
+  if (dayWater(toDateStr(d)) < goal) d.setDate(d.getDate() - 1);  // hoje ainda pode bater a meta
+  let n = 0;
+  while (dayWater(toDateStr(d)) >= goal) { n++; d.setDate(d.getDate() - 1); }
+  return n;
+}
+
+function waterCardHtml() {
+  const water = dayWater(currentDate), goal = waterGoal();
+  const pct = Math.round(water / goal * 100);
+  const today = toDateStr(new Date());
+  const week = weekDates(currentDate);
+  const logged = week.filter(d => d <= today && dayWater(d) > 0);
+  const avg = logged.length ? logged.reduce((t, d) => t + dayWater(d), 0) / logged.length : 0;
+  const streak = waterStreak(currentDate);
+  return `
+    <div class="entry-card">
+      <div class="entry-head">
+        <span class="entry-name">💧 Água</span>
+        <button class="btn-mini" onclick="openGoals()" title="Alterar meta">meta ${goal.toLocaleString('pt-BR')}ml ✏️</button>
+      </div>
+      <div class="water-top">
+        <b class="water-big">${water.toLocaleString('pt-BR')}<small>ml</small></b>
+        <span class="water-pct">${pct}% · ${water >= goal ? 'meta batida 🎉' : `faltam ${(goal - water).toLocaleString('pt-BR')}ml`}</span>
+      </div>
+      <div class="water-bar"><div class="water-fill" style="width:${Math.min(100, pct)}%"></div></div>
+      <div class="water-btns">
+        <button class="water-btn minus" onclick="addWater(-250)" title="Desfazer 250ml">−</button>
+        <button class="water-btn" onclick="addWater(250)">＋250</button>
+        <button class="water-btn" onclick="addWater(500)">＋500</button>
+        <button class="water-btn" onclick="addWater(700)">＋700</button>
+      </div>
+      <div class="water-week">${week.map((d, i) =>
+        `<div class="water-day ${d === currentDate ? 'active' : ''}"><span>${WEEKDAYS[i][0]}</span>${ringSvg(d > today ? 0 : dayWater(d) / goal, 22, '#0ea5e9', false)}</div>`).join('')}
+      </div>
+      <div class="water-stats">
+        <div><b>${streak}</b> dia${streak === 1 ? '' : 's'} seguido${streak === 1 ? '' : 's'} na meta</div>
+        <div><b>${Math.round(avg).toLocaleString('pt-BR')}ml</b> média da semana</div>
+      </div>
+    </div>`;
+}
+
+/* ── Modal de metas ── */
+function openGoals() {
+  const g = dietGoals();
+  const b = profileComplete() && weightOn(currentDate) ? dayBalance(currentDate) : null;
+  const kg = weightOn(currentDate) ? Number(weightOn(currentDate).w) : null;
+  const field = (id, label, unit, val) => `
+    <div class="bio-field"><label for="${id}">${label}</label>
+      <input type="number" id="${id}" step="any" min="0" inputmode="decimal" value="${val || ''}"><span class="unit">${unit}</span></div>`;
+  document.getElementById('goals-body').innerHTML = `
+    <div class="bio-fields">
+      ${field('goal-kcal', 'Calorias', 'kcal', g.kcal)}
+      ${field('goal-prot', 'Proteína', 'g', g.prot)}
+      ${field('goal-carb', 'Carboidratos', 'g', g.carb)}
+      ${field('goal-gord', 'Gordura', 'g', g.gord)}
+      ${field('goal-water', 'Água', 'ml', waterGoal())}
+    </div>
+    ${b ? `<p class="food-hint goals-hint">💡 Seu gasto estimado (aba Balanço) é de <b>~${fmtKcal(b.basal + b.neat)} kcal</b> num dia sem treino.
+      Para perder gordura, uma meta comum é ficar 300–500 kcal abaixo disso.</p>` : ''}
+    ${kg ? `<p class="food-hint goals-hint">💡 Para quem treina, a proteína recomendada é 1,6–2,2 g por kg: <b>${Math.round(kg * 1.6)}–${Math.round(kg * 2.2)} g</b> para ${fmtNum(kg)} kg.</p>` : ''}
+    <p class="food-hint goals-hint">Os treinos registrados no dia somam no "Exercício" e aumentam o que resta para comer, como no app da balança.</p>
+    <button class="btn-primary btn-block" onclick="saveGoals()">Salvar metas</button>`;
+  document.getElementById('modal-goals').classList.add('show');
+}
+
+function saveGoals() {
+  const num = id => parseFloat(String(document.getElementById(id).value).replace(',', '.')) || 0;
+  const goals = {};
+  ['kcal', 'prot', 'carb', 'gord'].forEach(k => { const v = num('goal-' + k); if (v > 0) goals[k] = v; });
   if (!cache.settings) cache.settings = {};
-  cache.settings.waterGoal = v;
+  cache.settings.goals = goals;
+  const w = num('goal-water');
+  if (w > 0) cache.settings.waterGoal = w;
   saveToCloud('settings');
+  closeModal('modal-goals');
   renderDieta();
+}
+
+/* ── Acompanhamento: dia / semana / mês / ano ── */
+function trackRange() {
+  const cd = parseDate(currentDate), y = cd.getFullYear(), m = cd.getMonth();
+  if (trackMode === 'semana') {
+    const w = weekDates(currentDate);
+    return { dates: w, label: `${fmtDateShort(w[0])} – ${fmtDateShort(w[6])}` };
+  }
+  if (trackMode === 'mes') return { dates: monthDates(y, m), label: `${MONTHS[m]} de ${y}` };
+  if (trackMode === 'ano') return { dates: Array.from({ length: 12 }, (_, i) => monthDates(y, i)).flat(), label: String(y) };
+  return { dates: [currentDate], label: fmtDateFull(currentDate) };
+}
+
+function setTrackMode(mode) { trackMode = mode; renderDieta(); }
+
+function shiftTrack(dir) {
+  const d = parseDate(currentDate);
+  if (trackMode === 'dia') d.setDate(d.getDate() + dir);
+  else if (trackMode === 'semana') d.setDate(d.getDate() + 7 * dir);
+  else {
+    const day = d.getDate();
+    d.setDate(1);
+    if (trackMode === 'mes') d.setMonth(d.getMonth() + dir); else d.setFullYear(d.getFullYear() + dir);
+    d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+  }
+  currentDate = toDateStr(d);
+  renderAll();
+}
+
+// Barras do gráfico conforme o modo: refeições do dia, dias da semana/mês ou meses do ano
+function trackBars(range) {
+  if (trackMode === 'dia') {
+    return currentMeals().map(m => ({ label: m.name.replace(/^\W+\s*/, '') || m.name, v: mealMacros(m).kcal }));
+  }
+  if (trackMode === 'ano') {
+    const y = currentDate.slice(0, 4);
+    return MONTHS_SHORT.map((name, i) => {
+      const ds = monthDates(+y, i).filter(dayLogged);
+      return { label: name, v: ds.length ? ds.reduce((t, d) => t + dayKcal(d), 0) / ds.length : null };
+    });
+  }
+  return range.dates.map((d, i) => ({
+    label: trackMode === 'semana' ? WEEKDAYS[i] : String(+d.slice(8)),
+    v: dayLogged(d) ? dayKcal(d) : null,
+    target: dayTarget(d)
+  }));
+}
+
+function trackCardHtml() {
+  const g = dietGoals();
+  const range = trackRange();
+  const logged = range.dates.filter(dayLogged);
+  const total = logged.reduce((t, d) => t + dayKcal(d), 0);
+  const avgMacros = sumMacros(logged.map(d => dayMacros(dayNutri(d))));
+  Object.keys(avgMacros).forEach(k => { avgMacros[k] = logged.length ? avgMacros[k] / logged.length : 0; });
+  const isDay = trackMode === 'dia';
+  const main = isDay ? total : avgMacros.kcal;
+  const progress = g.kcal ? Math.round(main / (isDay ? dayTarget(currentDate) : g.kcal) * 100) : null;
+
+  // Ranking de ingestão: alimentos que mais somaram calorias no período
+  const rank = new Map();
+  logged.forEach(d => (dayNutri(d).meals || []).forEach(m => (m.items || []).forEach(it => {
+    const r = rank.get(it.foodId) || { kcal: 0, times: 0 };
+    r.kcal += itemMacros(it).kcal; r.times++;
+    rank.set(it.foodId, r);
+  })));
+  const ranking = [...rank.entries()].sort((a, b) => b[1].kcal - a[1].kcal).slice(0, 10);
+
+  const tabs = [['dia', 'Dia'], ['semana', 'Semana'], ['mes', 'Mês'], ['ano', 'Ano']].map(([v, l]) =>
+    `<button class="period-btn ${trackMode === v ? 'active' : ''}" onclick="setTrackMode('${v}')">${l}</button>`).join('');
+  const bars = trackBars(range);
+  const hasBars = bars.some(b => b.v);
+
+  return `
+    <div class="entry-card track-card">
+      <div class="entry-head"><span class="entry-name">📊 Acompanhamento</span></div>
+      <div class="period-tabs full">${tabs}</div>
+      <div class="period-nav">
+        <button class="btn-icon" onclick="shiftTrack(-1)">◀</button>
+        <b>${range.label}</b>
+        <button class="btn-icon" onclick="shiftTrack(1)">▶</button>
+      </div>
+      ${logged.length ? `
+        <div class="track-head">
+          <div><small>${isDay ? 'Quantidade total' : 'Média por dia'}</small><b>${fmtKcal(main)}<small> kcal</small></b></div>
+          <div class="right"><small>Progresso</small><b>${progress !== null ? progress + '<small>%</small>' : '—'}</b></div>
+        </div>
+        ${isDay ? '' : `<p class="bal-sub">${logged.length} dia${logged.length === 1 ? '' : 's'} registrado${logged.length === 1 ? '' : 's'} · total ${fmtKcal(total)} kcal</p>`}
+        ${hasBars ? '<div class="track-chart-wrap"><canvas id="track-chart"></canvas></div>' : ''}
+        ${isDay ? '' : macroBarsHtml(avgMacros, g)}
+        <p class="bio-group">🏆 Ranking de ingestão</p>
+        ${ranking.map(([id, r], i) => {
+          const f = getFood(id);
+          return `<div class="rank-row"><span class="rank-pos">${i + 1}</span>
+            <span class="rank-name">${f ? esc(f.name) : '(excluído)'}${r.times > 1 ? ` <small>${r.times}×</small>` : ''}</span>
+            <b>${fmtKcal(r.kcal)} kcal</b></div>`;
+        }).join('')}` : `<p class="meal-empty">Nenhuma refeição registrada nesse período.</p>`}
+    </div>`;
+}
+
+// Linha tracejada da meta de calorias por cima das barras
+const goalLinePlugin = {
+  id: 'goalLine',
+  afterDatasetsDraw(chart, args, opts) {
+    if (!opts.value) return;
+    const y = chart.scales.y.getPixelForValue(opts.value);
+    const { left, right } = chart.chartArea;
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.strokeStyle = opts.color; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
+    ctx.setLineDash([]); ctx.fillStyle = opts.color; ctx.font = '600 10px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+    ctx.fillText('meta', right, y - 2);
+    ctx.restore();
+  }
+};
+
+function drawTrackChart() {
+  if (trackChart) { trackChart.destroy(); trackChart = null; }
+  const canvas = document.getElementById('track-chart');
+  if (!canvas) return;
+  const g = dietGoals();
+  const bars = trackBars(trackRange());
+  const dark = document.body.classList.contains('dark');
+  const muted = dark ? '#94a3b8' : '#6b7280';
+  const goalForBars = trackMode === 'dia' ? null : g.kcal;
+  trackChart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: bars.map(b => b.label),
+      datasets: [{
+        data: bars.map(b => b.v === null ? null : Math.round(b.v)),
+        backgroundColor: bars.map(b => goalForBars && b.v > (b.target || goalForBars) * 1.05 ? 'rgba(220,38,38,0.55)' : 'rgba(234,88,12,0.45)'),
+        borderRadius: 6, maxBarThickness: 26
+      }]
+    },
+    plugins: [goalLinePlugin],
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        goalLine: { value: goalForBars, color: muted },
+        tooltip: { callbacks: { label: item => `${fmtKcal(item.raw)} kcal${trackMode === 'ano' ? ' (média/dia)' : ''}` } }
+      },
+      scales: {
+        y: { beginAtZero: true, border: { display: false }, suggestedMax: goalForBars ? goalForBars * 1.1 : undefined,
+             grid: { color: dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)' },
+             ticks: { maxTicksLimit: 5, color: muted } },
+        x: { grid: { display: false }, ticks: { color: muted, autoSkip: true, maxRotation: 0, font: { size: 10 } } }
+      }
+    }
+  });
 }
 
 /* ── Refeições ── */

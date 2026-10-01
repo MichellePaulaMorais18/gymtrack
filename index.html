@@ -67,10 +67,12 @@
         </div>
         <button class="btn-icon" onclick="shiftDate(1)">▶</button>
       </div>
-      <div id="dieta-summary"></div>
+      <div id="dieta-week"></div>
+      <div id="dieta-gauge"></div>
       <div id="water-card"></div>
       <div id="dieta-meals"></div>
       <button class="btn-primary btn-block" onclick="openMealModal()">＋ Adicionar refeição</button>
+      <div id="dieta-track"></div>
       <button class="link-btn" onclick="showTab('cardapio')">🥗 Gerenciar alimentos e refeições prontas →</button>
     </section>
 
@@ -212,6 +214,15 @@
       <p class="food-hint">Valores referentes a 1 porção. No prato você escolhe quantas porções (pode ser 0,5 / 1,5...).</p>
       <button type="submit" class="btn-primary btn-block">Salvar</button>
     </form>
+  </div>
+</div>
+
+<!-- ══ MODAL: metas da dieta ══ -->
+<div id="modal-goals" class="modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal('modal-goals')">✕</button>
+    <h3>🎯 Metas diárias</h3>
+    <div id="goals-body"></div>
   </div>
 </div>
 

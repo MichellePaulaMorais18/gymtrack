@@ -312,18 +312,102 @@ body.dark .btn-mini.danger-mini { background: rgba(239,68,68,0.15); }
 .ex-stats { display: flex; gap: 10px; margin-bottom: 12px; }
 
 /* ══ DIETA ══ */
-#dieta-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 14px; }
-#dieta-summary .sum-chip { padding: 8px 4px; }
-#dieta-summary .sum-chip b { font-size: 0.92rem; }
+/* Faixa da semana com anéis de progresso */
+.week-strip {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 6px; margin-bottom: 12px;
+}
+.week-day {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  background: none; border: none; border-radius: 10px; padding: 5px 0 6px;
+  cursor: pointer; font-family: inherit; color: var(--muted);
+}
+.week-day span { font-size: 0.66rem; font-weight: 600; }
+.week-day b { font-size: 0.88rem; color: var(--text); }
+.week-day.today b { color: var(--primary); }
+.week-day.active { background: var(--primary-soft); }
+.week-day .ring { margin-top: 2px; }
 
+/* Medidor de calorias em arco */
+.gauge { position: relative; max-width: 260px; margin: 4px auto 0; }
+.gauge-svg { display: block; width: 100%; height: auto; }
+.gauge-center {
+  position: absolute; left: 0; right: 0; bottom: 4px;
+  display: flex; flex-direction: column; align-items: center; line-height: 1.1;
+}
+.gauge-center b { font-size: 2.3rem; font-weight: 800; color: var(--primary); }
+.gauge-center small { font-size: 0.78rem; color: var(--muted); font-weight: 600; }
+.gauge-center.over b { color: var(--red); }
+.gauge-formula { text-align: center; font-size: 0.7rem; color: var(--muted); margin: 6px 0 10px; }
+.gauge-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end; gap: 6px; margin-bottom: 14px;
+}
+.gauge-row > span { color: var(--muted); font-weight: 700; padding-bottom: 8px; }
+.gauge-row > div { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0; }
+.gauge-row small { font-size: 0.7rem; color: var(--muted); white-space: nowrap; }
+.gauge-row b {
+  width: 100%; text-align: center; background: var(--bg); border-radius: 10px;
+  padding: 7px 4px; font-size: 0.95rem;
+}
+.gauge-extra { font-size: 0.74rem; color: var(--muted); margin-top: 10px; text-align: center; }
+
+/* Barras de macros (consumido / meta) */
+.macro-bars { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.macro-bar { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.macro-name { font-size: 0.74rem; font-weight: 700; color: var(--text); }
+.macro-track { height: 6px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+.macro-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+.macro-val { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
+.macro-val b { color: var(--text); }
+
+/* Água (card compacto) */
+.water-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.water-big { font-size: 1.7rem; font-weight: 800; color: #0ea5e9; }
+.water-big small { font-size: 0.85rem; margin-left: 2px; }
+.water-pct { color: var(--muted); font-size: 0.78rem; }
 .water-bar {
-  height: 10px; background: var(--bg); border: 1px solid var(--border);
-  border-radius: 6px; overflow: hidden; margin: 10px 0 8px;
+  height: 8px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden; margin: 8px 0 10px;
 }
 .water-fill { height: 100%; background: #0ea5e9; border-radius: 6px; transition: width 0.3s; }
-.water-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-.water-pct { color: var(--muted); font-weight: 400; font-size: 0.78rem; }
-.water-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.water-btns { display: grid; grid-template-columns: 44px repeat(3, minmax(0, 1fr)); gap: 6px; }
+.water-btn {
+  background: rgba(14,165,233,0.1); color: #0284c7; border: none; border-radius: 10px;
+  padding: 9px 4px; font-family: inherit; font-weight: 800; font-size: 0.88rem; cursor: pointer;
+}
+body.dark .water-btn { color: #38bdf8; background: rgba(14,165,233,0.15); }
+.water-btn.minus { background: var(--bg); color: var(--muted); }
+.water-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); margin: 12px 0 8px; }
+.water-day { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 0.62rem; color: var(--muted); font-weight: 700; }
+.water-day.active span { color: #0ea5e9; }
+.water-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.water-stats > div { background: var(--bg); border-radius: 10px; padding: 8px 10px; font-size: 0.74rem; color: var(--muted); }
+.water-stats b { display: block; font-size: 1.05rem; color: var(--text); }
+
+/* Acompanhamento */
+.track-card { margin-top: 14px; }
+.track-head { display: flex; justify-content: space-between; gap: 10px; margin: 4px 0 6px; }
+.track-head > div { display: flex; flex-direction: column; }
+.track-head .right { align-items: flex-end; }
+.track-head small { font-size: 0.74rem; color: var(--muted); }
+.track-head b { font-size: 1.6rem; font-weight: 800; }
+.track-head b small { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+.track-chart-wrap { position: relative; height: 190px; margin: 6px 0 14px; }
+.rank-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 0;
+  border-bottom: 1px dashed var(--border); font-size: 0.88rem;
+}
+.rank-row:last-child { border-bottom: none; }
+.rank-pos {
+  width: 24px; height: 24px; flex-shrink: 0; border-radius: 50%; background: var(--primary-soft);
+  color: var(--primary); font-size: 0.75rem; font-weight: 800; display: flex; align-items: center; justify-content: center;
+}
+.rank-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.rank-name small { color: var(--muted); }
+.goals-hint { margin: 10px 0 0; line-height: 1.45; }
+.goals-hint + .btn-primary, .bio-fields + .btn-primary { margin-top: 14px; }
 
 .meal-item { padding: 7px 0; border-bottom: 1px dashed var(--border); }
 .meal-item-top { display: flex; align-items: center; gap: 6px; }
