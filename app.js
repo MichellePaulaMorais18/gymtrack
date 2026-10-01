@@ -2025,7 +2025,7 @@ function renderCorpo() {
   document.getElementById('corpo-date-label').textContent = fmtDateLong(currentDate);
   const wrap = document.getElementById('corpo-content');
   const rec = (cache.weights || {})[currentDate];
-  wrap.innerHTML = (rec && !bioEditing ? bioViewHtml(rec) : bioFormHtml(rec)) +
+  wrap.innerHTML = (rec && !bioEditing ? bioHeadlineHtml(rec) + bioViewHtml(rec) + bioAnalysisHtml(rec) : bioFormHtml(rec)) +
     bioChartCardHtml() + bioCompareCardHtml() + bioHistoryHtml();
   drawBodyChart();
 }
@@ -2089,25 +2089,235 @@ function bioViewHtml(rec) {
   const prev = {};
   BIO_METRICS.forEach(m => { const v = lastMetricIn(prevDates, m.k); if (v !== null) prev[m.k] = v; });
   const hasPrev = Object.keys(prev).length > 0;
+  const refs = bioRefs(rec, currentDate);
   return `
     <div class="entry-card">
       <div class="entry-head">
-        <span class="entry-name">🧬 Medição de ${fmtDateShort(currentDate)}</span>
-        <div class="hist-actions">
-          <button class="btn-tiny" title="Editar" onclick="bioEditing=true;renderCorpo()">✏️</button>
-          <button class="btn-tiny danger" title="Apagar" onclick="deleteBio()">🗑</button>
-        </div>
+        <span class="entry-name">📋 Métricas corporais</span>
       </div>
       ${hasPrev ? `<p class="bal-sub">Δ = diferença para o último valor anterior de cada métrica · <span class="bio-delta good">verde</span> na direção boa, <span class="bio-delta bad">vermelho</span> na direção ruim</p>` : ''}
       ${BIO_GROUPS.map(g => {
         const rows = g.metrics.filter(([k]) => rec[k] !== undefined).map(([k]) => {
           const m = bioMetric(k);
           const d = prev[k] !== undefined ? fmtBioDelta(m, rec[k] - prev[k]) : '';
-          return `<div class="bal-row bio-row"><span>${m.label}</span><span><b>${fmtBio(m, rec[k])}</b> ${d}</span></div>`;
+          const c = classifyBio(k, rec[k], refs);
+          return `<div class="bal-row bio-row"><span>${m.label}</span>
+            <span class="bio-val"><span><b>${fmtBio(m, rec[k])}</b> ${d}</span>${c ? `<span class="bio-tag ${c.tone}">${c.label}</span>` : ''}</span></div>`;
         }).join('');
         return rows ? `<p class="bio-group">${g.name}</p>${rows}` : '';
       }).join('')}
     </div>`;
+}
+
+/* ── Faixas de referência e análises derivadas (como as da balança) ──
+   Peso/IMC: limites da OMS (18,5 / 24,9 / 29,9), iguais aos da balança dela.
+   Demais métricas: faixas gerais aproximadas por sexo — servem de orientação, não de diagnóstico. */
+const TONES = { low: 'low', good: 'good', warn: 'warn', bad: 'bad' };
+
+function bioContext(rec, date) {
+  const p = cache.profile || {};
+  const sex = p.sex === 'M' ? 'M' : 'F';
+  const hCm = Number(rec.height || p.height) || 0;
+  const age = Number(rec.age) || (p.birthYear ? Number(date.slice(0, 4)) - Number(p.birthYear) : 0);
+  return { sex, h: hCm / 100, age, w: Number(rec.w) || 0 };
+}
+
+// Cada referência: limites (cuts) e as faixas entre eles [nome, tom]
+function bioRefs(rec, date) {
+  const { sex, h, age, w } = bioContext(rec, date);
+  const F = sex === 'F';
+  const bmiBands = [['Baixo', 'low'], ['Saudável', 'good'], ['Alto', 'warn'], ['Obeso', 'bad']];
+  const bfCuts = F ? [21, 28, 38] : [11, 21, 28];
+  const bfBands = [['Baixo', 'low'], ['Saudável', 'good'], ['Alto', 'warn'], ['Muito alto', 'bad']];
+  const boneStd = F ? (w < 50 ? 1.8 : w <= 75 ? 2.2 : 2.5) : (w < 65 ? 2.5 : w <= 95 ? 2.9 : 3.2);
+  const smmCuts = F ? [25, 30] : [33, 39];
+  const refs = {
+    imc: { cuts: [18.5, 24.9, 29.9], bands: bmiBands },
+    bf: { cuts: bfCuts, bands: bfBands },
+    visceral: { cuts: [9.5, 14.5], bands: [['Saudável', 'good'], ['Alto', 'warn'], ['Muito alto', 'bad']] },
+    obesity: { cuts: [-10, 10, 20], bands: [['Abaixo', 'low'], ['Saudável', 'good'], ['Acima', 'warn'], ['Obeso', 'bad']] },
+    waterPct: { cuts: F ? [50, 60] : [55, 65], bands: [['Baixo', 'warn'], ['Saudável', 'good'], ['Excelente', 'good']] },
+    protein: { cuts: [16, 20], bands: [['Baixo', 'warn'], ['Saudável', 'good'], ['Excelente', 'good']] },
+    musclePct: { cuts: smmCuts, bands: [['Baixo', 'warn'], ['Saudável', 'good'], ['Excelente', 'good']] },
+    bone: { cuts: [boneStd - 0.1], bands: [['Baixo', 'warn'], ['Excelente', 'good']] }
+  };
+  if (h) refs.w = { cuts: [18.5, 24.9, 29.9].map(b => b * h * h), bands: bmiBands };
+  if (w) {
+    refs.fatKg = { cuts: bfCuts.map(c => c * w / 100), bands: bfBands };
+    refs.smm = { cuts: smmCuts.map(c => c * w / 100), bands: refs.musclePct.bands };
+  }
+  if (age) refs.metaAge = { cuts: [age + 0.5], bands: [['Excelente', 'good'], ['Acima da idade', 'warn']] };
+  return refs;
+}
+
+function classifyBio(k, v, refs) {
+  const r = refs[k];
+  if (!r || v === undefined || v === null) return null;
+  const i = r.cuts.filter(c => v >= c).length;
+  const [label, tone] = r.bands[i];
+  return { label, tone: TONES[tone], index: i };
+}
+
+// Posição (0 a 1) do valor na barra colorida, com faixas de larguras iguais
+function rangePos(v, cuts) {
+  const span = cuts.length > 1 ? cuts[1] - cuts[0] : cuts[0] * 0.3;
+  const bounds = [cuts[0] - span, ...cuts, cuts[cuts.length - 1] + span];
+  const n = bounds.length - 1;
+  let i = bounds.findIndex((b, j) => j < n && v < bounds[j + 1]);
+  if (i < 0) i = n - 1;
+  const frac = (v - bounds[i]) / (bounds[i + 1] - bounds[i]);
+  return Math.max(0.01, Math.min(0.99, (i + Math.max(0, Math.min(1, frac))) / n));
+}
+
+function rangeBarHtml(v, ref, fmtCut) {
+  const pos = rangePos(v, ref.cuts);
+  return `
+    <div class="range-bar">
+      <div class="range-track">${ref.bands.map(([, tone]) => `<span class="${tone}"></span>`).join('')}</div>
+      <div class="range-marker" style="left:${(pos * 100).toFixed(1)}%"></div>
+      <div class="range-cuts">${ref.cuts.map((c, i) =>
+        `<span style="left:${((i + 1) / ref.bands.length * 100).toFixed(1)}%">${fmtCut(c)}</span>`).join('')}</div>
+      <div class="range-labels">${ref.bands.map(([l]) => `<span>${l}</span>`).join('')}</div>
+    </div>`;
+}
+
+/* Destaque do peso: classificação, barra, comparação com a última vez e melhor dos 30 dias */
+function bioHeadlineHtml(rec) {
+  const refs = bioRefs(rec, currentDate);
+  const c = classifyBio('w', rec.w, refs);
+  const before = bioDates().filter(d => d < currentDate && cache.weights[d].w !== undefined);
+  const prevD = before[before.length - 1];
+  const from = parseDate(currentDate); from.setDate(from.getDate() - 29);
+  const last30 = bioDates().filter(d => d >= toDateStr(from) && d <= currentDate && cache.weights[d].w !== undefined);
+  const best = last30.length > 1 ? last30.reduce((a, b) => cache.weights[b].w < cache.weights[a].w ? b : a) : null;
+  const delta = prevD ? rec.w - cache.weights[prevD].w : null;
+  return `
+    <div class="entry-card bio-headline">
+      <div class="entry-head">
+        <span class="entry-name">🧬 Medição de ${fmtDateFull(currentDate)}</span>
+        <div class="hist-actions">
+          <button class="btn-tiny" title="Editar" onclick="bioEditing=true;renderCorpo()">✏️</button>
+          <button class="btn-tiny danger" title="Apagar" onclick="deleteBio()">🗑</button>
+        </div>
+      </div>
+      <div class="headline-weight">
+        <b>${fmtNum(rec.w)}<small> kg</small></b>
+        ${c ? `<span class="bio-tag ${c.tone}">${c.label}</span>` : ''}
+      </div>
+      ${refs.w ? rangeBarHtml(rec.w, refs.w, v => fmtNum(Math.round(v * 100) / 100))
+               : '<p class="food-hint">Preencha a altura no perfil (aba Balanço) para ver a faixa do peso.</p>'}
+      <div class="headline-stats">
+        <div><span>Comparado com a última vez${prevD ? ` (${fmtDateFull(prevD)})` : ''}</span>
+          <b>${delta !== null ? fmtSigned(delta, 1) + ' kg' : '--'}</b></div>
+        <div><span>Melhor peso de 30 dias</span>
+          <b>${best ? `${fmtNum(cache.weights[best].w)} kg <small>(${fmtDateShort(best)})</small>` : '--'}</b></div>
+      </div>
+    </div>`;
+}
+
+/* Tipo de corpo: IMC × % de gordura */
+const BODY_TYPES = {
+  // [linha do IMC: 0 baixo, 1 normal, 2 alto][coluna da gordura: 0 baixa, 1 padrão, 2 alta]
+  grid: [
+    ['Magro', 'Abaixo do peso', 'Magro com gordura alta'],
+    ['Muscular esbelto', 'Saudável', 'Obesidade oculta'],
+    ['Atlético', 'Muscular acima do peso', 'Obesidade']
+  ],
+  tips: {
+    'Magro': 'Peso e gordura baixos. Foco: comer um pouco acima do gasto e treinar força para ganhar massa muscular.',
+    'Abaixo do peso': 'Gordura na faixa, mas peso abaixo. Foco: superávit leve com treino de força e proteína para ganhar músculo.',
+    'Magro com gordura alta': 'Peso baixo, mas gordura alta — sinal de pouca massa muscular. Foco: treino de força e proteína, sem cortar calorias.',
+    'Muscular esbelto': 'Pouca gordura com peso normal. Foco: manter o treino e a proteína.',
+    'Saudável': 'Peso e gordura na faixa saudável. Foco: manter e seguir ganhando força.',
+    'Obesidade oculta': 'Peso normal, mas gordura alta e pouca massa muscular. Foco: ganhar músculo (força + proteína) mais do que baixar o peso.',
+    'Atlético': 'IMC alto por causa da massa muscular, com pouca gordura. O IMC sozinho exagera aqui.',
+    'Muscular acima do peso': 'IMC alto em parte por músculo, com gordura na faixa. Foco: manter o treino e reduzir gordura aos poucos.',
+    'Obesidade': 'Peso e gordura acima da faixa. Foco: déficit moderado (300–500 kcal) com treino de força e proteína alta, para perder gordura preservando músculo.'
+  }
+};
+
+function bioAnalysisHtml(rec) {
+  const ctx = bioContext(rec, currentDate);
+  const refs = bioRefs(rec, currentDate);
+  const cards = [];
+  const tag = (k, v) => { const c = classifyBio(k, v, refs); return c ? `<span class="bio-tag ${c.tone}">${c.label}</span>` : ''; };
+
+  // 1) Composição: Peso = Água + Gordura + Proteína + Ossos
+  const parts = [
+    ['💧 Água', rec.waterKg, 'waterPct', rec.waterPct],
+    ['🧈 Gordura', rec.fatKg !== undefined ? rec.fatKg : (rec.bf ? rec.w * rec.bf / 100 : undefined), 'bf', rec.bf],
+    ['🥩 Proteína', rec.protein ? rec.w * rec.protein / 100 : undefined, 'protein', rec.protein],
+    ['🦴 Ossos', rec.bone, 'bone', rec.bone]
+  ].filter(p => p[1] !== undefined);
+  if (parts.length >= 2) {
+    const sum = parts.reduce((t, p) => t + Number(p[1]), 0);
+    cards.push(`
+      <div class="entry-card">
+        <div class="entry-head"><span class="entry-name">🧪 Análise da composição</span></div>
+        <p class="bal-sub">Peso = Água + Gordura + Proteína + Ossos</p>
+        ${parts.map(([name, kg, key, val]) => `
+          <div class="comp-row">
+            <div class="comp-head"><span>${name}</span>${tag(key, val)}</div>
+            <div class="comp-track"><div class="comp-fill" style="width:${Math.min(100, kg / rec.w * 100).toFixed(1)}%"></div>
+              <b>${fmtNum(Math.round(kg * 10) / 10)} kg</b></div>
+          </div>`).join('')}
+        <p class="bio-sum-foot">Soma: ${fmtNum(Math.round(sum * 10) / 10)} de ${fmtNum(rec.w)} kg${Math.abs(sum - rec.w) >= 0.5
+          ? ' — a balança estima cada parte separadamente, então a soma não fecha exata.' : '.'}</p>
+      </div>`);
+  }
+
+  // 2) Tipo de corpo (precisa de IMC e % gordura)
+  const bmi = rec.imc || (ctx.h ? rec.w / ctx.h / ctx.h : null);
+  if (bmi && rec.bf) {
+    const row = bmi < 18.5 ? 0 : bmi < 24.9 ? 1 : 2;
+    const bfCuts = refs.bf.cuts;
+    const col = rec.bf < bfCuts[0] ? 0 : rec.bf < bfCuts[1] ? 1 : 2;
+    const type = BODY_TYPES.grid[row][col];
+    cards.push(`
+      <div class="entry-card">
+        <div class="entry-head"><span class="entry-name">🧍 Tipo de corpo</span></div>
+        <div class="body-type">
+          <div class="bt-y">${['≥ 24,9', '18,5–24,9', '< 18,5'].map(l => `<span>${l}</span>`).join('')}</div>
+          <div class="bt-grid">${[2, 1, 0].map(r => [0, 1, 2].map(cIdx =>
+            `<div class="bt-cell ${r === row && cIdx === col ? 'active ' + (r === 1 && cIdx === 1 ? 'good' : 'warn') : ''}">${BODY_TYPES.grid[r][cIdx]}</div>`).join('')).join('')}</div>
+          <div></div>
+          <div class="bt-x"><span>gordura baixa</span><span>${bfCuts[0]}%</span><span>padrão</span><span>${bfCuts[1]}%</span><span>alta</span></div>
+        </div>
+        <p class="bt-axis-note">↕ IMC (${fmtNum(Math.round(bmi * 10) / 10)}) · ↔ % de gordura (${fmtNum(rec.bf)}%)</p>
+        <div class="bal-note"><b>${type}:</b> ${BODY_TYPES.tips[type]}</div>
+      </div>`);
+  }
+
+  // 3) Controle de peso: peso "ideal" pelo IMC × meta realista pela composição
+  if (ctx.h) {
+    const ideal = 21 * ctx.h * ctx.h;
+    const rows = [`
+      <div class="ctrl-row"><span>⚖️ Peso ideal pelo IMC (21)</span><b>${fmtNum(Math.round(ideal * 10) / 10)} kg</b></div>
+      <p class="ctrl-sub">${rec.w > ideal ? `${fmtNum(Math.round((rec.w - ideal) * 10) / 10)} kg acima` : `${fmtNum(Math.round((ideal - rec.w) * 10) / 10)} kg abaixo`} — é a conta que a balança usa, mas ela não diferencia músculo de gordura.</p>`];
+    if (rec.bf) {
+      const targetBf = (refs.bf.cuts[0] + refs.bf.cuts[1]) / 2;
+      const lean = rec.w * (1 - rec.bf / 100);
+      const targetW = lean / (1 - targetBf / 100);
+      const fatToLose = rec.w - targetW;
+      if (fatToLose > 0.3) {
+        const weeks = Math.ceil(fatToLose / 0.5);
+        rows.push(`
+          <div class="ctrl-row"><span>🎯 Meta pela composição</span><b>${fmtNum(Math.round(targetW * 10) / 10)} kg</b></div>
+          <p class="ctrl-sub">Mantendo sua massa magra (${fmtNum(Math.round(lean * 10) / 10)} kg) e chegando a <b>${fmtNum(targetBf)}% de gordura</b> (meio da faixa saudável):
+            perder <b>~${fmtNum(Math.round(fatToLose * 10) / 10)} kg de gordura</b>. No ritmo de 0,5 kg/semana, cerca de <b>${weeks} semanas</b>.
+            Costuma ser uma meta mais realista que o peso do IMC, porque não pede para perder músculo.</p>`);
+      } else {
+        rows.push(`<p class="ctrl-sub">✅ Sua % de gordura já está na faixa saudável: o foco pode ser manter e ganhar massa muscular.</p>`);
+      }
+    }
+    cards.push(`
+      <div class="entry-card">
+        <div class="entry-head"><span class="entry-name">💡 Controle de peso</span></div>
+        ${rows.join('')}
+        <p class="bio-sum-foot">Faixas de referência gerais (OMS para IMC; demais aproximadas por sexo). Não substituem avaliação de nutricionista ou médico.</p>
+      </div>`);
+  }
+  return cards.join('');
 }
 
 /* ── Gráfico de uma métrica ao longo do tempo ── */
