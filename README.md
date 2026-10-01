@@ -13,7 +13,7 @@ Tracker de academia: registre pesos e repetições de cada treino e acompanhe su
 - **Dieta** — cadastro de alimentos com calorias e macros por porção; monte o prato de cada refeição e veja a soma por refeição e do dia
 - **Cardápio** — alimentos padronizados (com busca) e refeições prontas para adicionar na Dieta com um toque
 - **Hidratação** — registro de água com meta diária
-- **Composição corporal** — todas as métricas da balança de bioimpedância por data, com gráfico de qualquer métrica, comparação entre medições e histórico
+- **Composição corporal** — todas as métricas da balança de bioimpedância por data, com gráfico de qualquer métrica, comparação entre medições e histórico; importação de planilha (.xlsx/.csv) da balança com reconhecimento automático das colunas
 - **Evolução** — visão mensal e anual: tabela mês a mês e comparação com o período anterior
 - **Balanço** — simulação de gasto calórico (TMB Mifflin-St Jeor + rotina + treino estimado por MET/ACSM), saldo diário, previsão × balança real e leitura de gordura/massa magra pela % de gordura
 - Login com Google + dados na nuvem (Realtime Database) — funciona em qualquer dispositivo

@@ -1656,8 +1656,8 @@ const BIO_GROUPS = [
     ['bf', 'Percentual de gordura', '%', 1, -1], ['fatKg', 'Peso da gordura', 'kg', 1, -1],
     ['visceral', 'Gordura visceral', '', 1, -1], ['obesity', 'Percentual de obesidade', '%', 1, -1]] },
   { name: '💪 Músculo e massa magra', metrics: [
-    ['musclePct', 'Percentual de massa muscular', '%', 1, 1], ['muscleKg', 'Peso da massa muscular', 'kg', 1, 1],
-    ['smm', 'Massa muscular esquelética', 'kg', 1, 1], ['muscleRate', 'Registro de massa muscular', '%', 1, 1],
+    ['musclePct', 'Percentual da massa muscular esquelética', '%', 1, 1], ['muscleKg', 'Peso da massa muscular', 'kg', 1, 1],
+    ['smm', 'Peso da massa muscular esquelética', 'kg', 1, 1], ['muscleRate', 'Registro de massa muscular', '%', 1, 1],
     ['lbm', 'LBM (massa magra)', 'kg', 1, 1], ['bone', 'Ossos', 'kg', 1, 0], ['protein', 'Proteína', '%', 1, 1]] },
   { name: '💧 Água', metrics: [
     ['waterPct', 'Percentual de água', '%', 1, 0], ['waterKg', 'Peso da água', 'kg', 1, 0]] },
@@ -1893,10 +1893,14 @@ function bioCompareCardHtml() {
 /* ── Histórico de medições ── */
 function bioHistoryHtml() {
   const dates = bioDates().reverse();
-  if (!dates.length) return '';
   return `
     <div class="entry-card">
       <div class="entry-head"><span class="entry-name">🗂️ Histórico de medições</span></div>
+      ${importUndo ? `
+        <div class="bal-note import-done">✅ ${importUndo.count} medições importadas.
+          <button class="btn-mini" onclick="undoImport()">↩ Desfazer</button></div>` : ''}
+      <button class="btn-add-serie import-btn" onclick="document.getElementById('import-file').click()">📥 Importar planilha da balança (.xlsx / .csv)</button>
+      ${dates.length ? '' : '<p class="meal-empty">Nenhuma medição registrada ainda.</p>'}
       ${dates.map(d => {
         const r = cache.weights[d];
         const extra = [r.bf !== undefined ? fmtNum(r.bf) + '% gord.' : '', r.muscleKg !== undefined ? fmtNum(r.muscleKg) + 'kg músc.' : '']
@@ -1931,6 +1935,281 @@ function bodyTrendCardHtml() {
       <div class="entry-head"><span class="entry-name">🧬 Composição corporal · ${lastTrend.range.label}</span></div>
       ${body}
     </div>`;
+}
+
+/* ══════════════════════════════════
+   IMPORTAR PLANILHA DE BIOIMPEDÂNCIA
+══════════════════════════════════ */
+const XLSX_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+
+// Nomes de coluna reconhecidos (já normalizados: minúsculas, sem acento, sem unidade entre parênteses)
+const IMPORT_COLUMNS = {
+  date:       ['data', 'date', 'dia'],
+  year:       ['ano', 'year'],
+  time:       ['tempo', 'hora', 'horario', 'time'],
+  w:          ['peso', 'weight'],
+  imc:        ['imc', 'bmi'],
+  height:     ['altura', 'height'],
+  age:        ['idade', 'idadereal', 'age'],
+  bf:         ['percentagemdegordura', 'percentualdegordura', 'gordura', 'gorduracorporal', 'bodyfat'],
+  fatKg:      ['pesodagordura', 'massagorda', 'fatmass'],
+  visceral:   ['gorduravisceral', 'visceral', 'visceralfat'],
+  obesity:    ['obesidade', 'percentualdeobesidade', 'obesity'],
+  musclePct:  ['percentualdamassamuscularesqueletica', 'percentualdemassamuscularesqueletica', 'percentualdamassamuscular', 'percentualdemassamuscular'],
+  muscleKg:   ['pesodamassamuscular', 'massamuscular', 'musclemass'],
+  smm:        ['pesodamassamuscularesqueletica', 'massamuscularesqueletica', 'smm'],
+  muscleRate: ['registrodemassamuscular'],
+  lbm:        ['lbm', 'massamagra', 'massaisentadegordura'],
+  bone:       ['ossos', 'massaossea', 'bone'],
+  protein:    ['proteina', 'protein'],
+  waterPct:   ['agua', 'percentualdeagua', 'water'],
+  waterKg:    ['pesodaagua'],
+  bmr:        ['metabolismo', 'metabolismobasal', 'tmb', 'bmr'],
+  metaAge:    ['idademetabolica', 'metabolicage']
+};
+
+let importState = null;  // {fileName, header, rows, mapping[], order, conflict}
+let importUndo = null;   // {count, backup} — cópia de weights antes da importação
+
+function normHeader(h) {
+  return String(h || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/\(.*?\)/g, '').replace(/[^a-z0-9]/g, '');
+}
+
+function loadXlsxLib() {
+  if (window.XLSX) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = XLSX_URL;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('não foi possível carregar o leitor de planilhas (sem internet?)'));
+    document.head.appendChild(s);
+  });
+}
+
+async function handleImportFile(input) {
+  const file = input.files[0];
+  input.value = '';  // permite escolher o mesmo arquivo de novo
+  if (!file) return;
+  try {
+    await loadXlsxLib();
+    // raw: em CSV, não deixar a biblioteca converter "01/10/2025" como data americana (mês/dia)
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', raw: true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const all = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+    // Linha de cabeçalho = primeira com pelo menos 3 textos
+    const hi = all.findIndex(r => r.filter(c => typeof c === 'string' && c.trim() && isNaN(Number(c))).length >= 3);
+    if (hi < 0) throw new Error('não encontrei a linha de títulos das colunas');
+    const header = all[hi].map(h => String(h).trim());
+    const rows = all.slice(hi + 1).filter(r => r.some(c => String(c).trim() !== ''));
+    importState = { fileName: file.name, header, rows, mapping: autoMapColumns(header, rows), order: null, conflict: 'merge' };
+    importState.order = detectDateOrder();
+    renderImportModal();
+    document.getElementById('modal-import').classList.add('show');
+  } catch (e) {
+    alert('Não consegui ler a planilha: ' + e.message);
+  }
+}
+
+function autoMapColumns(header, rows) {
+  const used = new Set();
+  const mapping = header.map(h => {
+    const n = normHeader(h);
+    const key = Object.keys(IMPORT_COLUMNS).find(k => !used.has(k) && IMPORT_COLUMNS[k].includes(n));
+    if (key) used.add(key);
+    return key || '';
+  });
+  // Coluna de ano sem título (como na exportação da balança): só números entre 1990 e 2100
+  if (!used.has('year')) {
+    header.forEach((h, i) => {
+      if (mapping[i] || used.has('year')) return;
+      const vals = rows.map(r => r[i]).filter(v => String(v).trim() !== '');
+      if (vals.length && vals.every(v => { const n = Number(v); return Number.isInteger(n) && n >= 1990 && n <= 2100; })) {
+        mapping[i] = 'year'; used.add('year');
+      }
+    });
+  }
+  return mapping;
+}
+
+function importNum(v) {
+  if (typeof v === 'number') return v;
+  let s = String(v).trim().replace(/[^\d.,\-]/g, '');
+  if (!s) return null;
+  if (s.includes('.') && s.includes(',')) {
+    s = s.lastIndexOf(',') > s.lastIndexOf('.') ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+  } else s = s.replace(',', '.');
+  const n = parseFloat(s);
+  return isNaN(n) ? null : n;
+}
+
+// Partes de data de uma célula: {y,m,d} já resolvido, ou {a,b,y?} quando dia/mês é ambíguo
+function dateParts(cell, yearCell) {
+  if (typeof cell === 'number' && cell > 20000 && cell < 80000) {  // data serial do Excel
+    const d = new Date(Date.UTC(1899, 11, 30) + Math.round(cell) * 86400000);
+    return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() };
+  }
+  const s = String(cell).trim();
+  let r;
+  if ((r = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) return { y: +r[1], m: +r[2], d: +r[3] };
+  if ((r = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})/))) return { a: +r[1], b: +r[2], y: r[3].length === 2 ? 2000 + +r[3] : +r[3] };
+  if ((r = s.match(/^(\d{1,2})[-\/.](\d{1,2})$/))) {
+    const y = importNum(yearCell);
+    return { a: +r[1], b: +r[2], y: y ? Math.round(y) : new Date().getFullYear() };
+  }
+  return null;
+}
+
+function colIndex(key) { return importState.mapping.indexOf(key); }
+
+// Decide se "10-01" é mês-dia ou dia-mês olhando todas as linhas
+function detectDateOrder() {
+  const di = colIndex('date'), yi = colIndex('year');
+  if (di < 0) return 'DM';
+  const pairs = importState.rows.map(r => dateParts(r[di], yi >= 0 ? r[yi] : '')).filter(p => p && p.a !== undefined);
+  if (!pairs.length) return 'DM';
+  if (pairs.some(p => p.a > 12)) return 'DM';
+  if (pairs.some(p => p.b > 12)) return 'MD';
+  // Ambíguo: escolhe a leitura em que as medições ficam mais próximas umas das outras
+  const span = order => {
+    const t = pairs.map(p => new Date(p.y, (order === 'MD' ? p.a : p.b) - 1, order === 'MD' ? p.b : p.a).getTime());
+    return Math.max(...t) - Math.min(...t);
+  };
+  return span('MD') < span('DM') ? 'MD' : 'DM';
+}
+
+function resolveDate(p, order) {
+  if (!p) return null;
+  const y = p.y, m = p.m !== undefined ? p.m : (order === 'MD' ? p.a : p.b), d = p.d !== undefined ? p.d : (order === 'MD' ? p.b : p.a);
+  const dt = new Date(y, m - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;  // ex.: 31/02
+  return toDateStr(dt);
+}
+
+// Converte as linhas em registros {data: {métricas}} usando o mapeamento atual
+function computeImport() {
+  const st = importState;
+  const di = colIndex('date'), yi = colIndex('year'), ti = colIndex('time');
+  const metricCols = st.mapping.map((k, i) => [k, i]).filter(([k]) => bioMetric(k));
+  const parsed = [];
+  let invalid = 0, zeros = 0;
+  st.rows.forEach((r, idx) => {
+    const date = di >= 0 ? resolveDate(dateParts(r[di], yi >= 0 ? r[yi] : ''), st.order) : null;
+    if (!date) { invalid++; return; }
+    const entry = {};
+    metricCols.forEach(([k, i]) => {
+      const v = importNum(r[i]);
+      if (v === null) return;
+      if (v === 0 && k !== 'visceral') { zeros++; return; }  // balança exporta 0,00 quando não mediu
+      entry[k] = v;
+    });
+    if (Object.keys(entry).length) parsed.push({ date, time: ti >= 0 ? String(r[ti]) : '', idx, entry });
+  });
+  // Mais de uma medição no dia: fica a mais recente (pelo horário; empate = a de baixo na planilha)
+  parsed.sort((x, y) => x.date.localeCompare(y.date) || x.time.localeCompare(y.time) || x.idx - y.idx);
+  const records = {};
+  let multi = 0;
+  parsed.forEach(p => { if (records[p.date]) multi++; records[p.date] = p.entry; });
+  const dates = Object.keys(records).sort();
+  return {
+    records, dates, invalid, zeros, multi,
+    noWeight: dates.filter(d => !records[d].w).length,
+    conflicts: dates.filter(d => cache.weights[d]).length,
+    metricCols
+  };
+}
+
+function renderImportModal() {
+  const st = importState;
+  const res = computeImport();
+  const opts = sel => [['', '— ignorar —'], ['date', '📅 Data'], ['year', '📅 Ano'], ['time', '🕒 Horário']]
+    .concat(BIO_METRICS.map(m => [m.k, m.label + (m.unit ? ` (${m.unit})` : '')]))
+    .map(([v, l]) => `<option value="${v}" ${v === sel ? 'selected' : ''}>${l}</option>`).join('');
+  const sample = st.rows[0] || [];
+  const ambiguous = colIndex('date') >= 0 && st.rows.some(r => {
+    const p = dateParts(r[colIndex('date')], ''); return p && p.a !== undefined;
+  });
+  const warnings = [];
+  if (colIndex('date') < 0) warnings.push('⚠️ Escolha qual coluna é a <b>Data</b>.');
+  if (res.invalid) warnings.push(`⚠️ ${res.invalid} linha${res.invalid > 1 ? 's' : ''} sem data válida ${res.invalid > 1 ? 'serão ignoradas' : 'será ignorada'}.`);
+  if (res.multi) warnings.push(`ℹ️ ${plural(res.multi, 'medição extra', 'medições extras')} no mesmo dia: fica só a mais recente de cada dia.`);
+  if (res.zeros) warnings.push(`ℹ️ ${plural(res.zeros, 'valor 0 tratado', 'valores 0 tratados')} como "não medido".`);
+  if (res.noWeight) warnings.push(`⚠️ ${plural(res.noWeight, 'medição sem peso entra', 'medições sem peso entram')} só com as outras métricas.`);
+  const CONFLICT_HINTS = {
+    merge: 'A planilha atualiza as métricas que ela tem e mantém o resto do registro do app (ex.: gordura visceral anotada à mão).',
+    replace: 'O registro do app nesse dia é apagado e fica só o que veio da planilha.',
+    keep: 'Esses dias ficam como estão no app; a planilha só preenche os dias novos.'
+  };
+
+  document.getElementById('import-body').innerHTML = `
+    <p class="bal-sub">📄 <b>${esc(st.fileName)}</b> · ${st.rows.length} linhas</p>
+    ${res.dates.length ? `
+      <div class="bal-note">Encontrei <b>${res.dates.length} medições</b>, de <b>${fmtDateFull(res.dates[0])}</b> a <b>${fmtDateFull(res.dates[res.dates.length - 1])}</b>, com ${res.metricCols.length} métricas.</div>` : ''}
+    ${warnings.map(w => `<p class="import-warn">${w}</p>`).join('')}
+
+    ${ambiguous ? `
+      <p class="bio-group">📅 Formato da data</p>
+      <div class="period-tabs full">
+        <button class="period-btn ${st.order === 'DM' ? 'active' : ''}" onclick="importState.order='DM';renderImportModal()">dia-mês</button>
+        <button class="period-btn ${st.order === 'MD' ? 'active' : ''}" onclick="importState.order='MD';renderImportModal()">mês-dia</button>
+      </div>
+      <p class="food-hint">Ex.: a primeira linha "${esc(String(sample[colIndex('date')]))}" vira <b>${res.dates.length ? fmtDateFull(resolveDate(dateParts(sample[colIndex('date')], colIndex('year') >= 0 ? sample[colIndex('year')] : ''), st.order) || res.dates[0]) : '—'}</b>.</p>` : ''}
+
+    ${res.conflicts ? `
+      <p class="bio-group">🔁 ${res.conflicts} data${res.conflicts > 1 ? 's' : ''} já ${res.conflicts > 1 ? 'têm' : 'tem'} registro no app</p>
+      <select class="bio-select" onchange="importState.conflict=this.value;renderImportModal()">
+        <option value="merge" ${st.conflict === 'merge' ? 'selected' : ''}>Mesclar (recomendado)</option>
+        <option value="replace" ${st.conflict === 'replace' ? 'selected' : ''}>Substituir pelo da planilha</option>
+        <option value="keep" ${st.conflict === 'keep' ? 'selected' : ''}>Manter o que já está no app</option>
+      </select>
+      <p class="food-hint">${CONFLICT_HINTS[st.conflict]}</p>` : ''}
+
+    <p class="bio-group">🧩 Colunas da planilha</p>
+    <p class="food-hint">Reconheci as colunas pelo nome. Confira e corrija se precisar.</p>
+    <div class="bio-fields">
+      ${st.header.map((h, i) => `
+        <div class="import-col">
+          <div class="import-col-name"><b>${esc(h) || '<i>(sem título)</i>'}</b><small>ex.: ${esc(String(sample[i] ?? ''))}</small></div>
+          <select onchange="importState.mapping[${i}]=this.value;importState.order=detectDateOrder();renderImportModal()">${opts(st.mapping[i])}</select>
+        </div>`).join('')}
+    </div>
+
+    <button class="btn-primary btn-block import-confirm" ${res.dates.length ? '' : 'disabled'} onclick="confirmImport()">
+      Importar ${plural(res.dates.length, 'medição', 'medições')}</button>`;
+}
+
+function plural(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
+
+function fmtDateFull(str) { return parseDate(str).toLocaleDateString('pt-BR'); }
+
+function confirmImport() {
+  const res = computeImport();
+  const backup = JSON.parse(JSON.stringify(cache.weights || {}));
+  if (!cache.weights) cache.weights = {};
+  let count = 0;
+  res.dates.forEach(d => {
+    const cur = cache.weights[d];
+    if (cur && importState.conflict === 'keep') return;
+    cache.weights[d] = cur && importState.conflict === 'merge' ? { ...cur, ...res.records[d] } : res.records[d];
+    count++;
+  });
+  saveToCloud('weights');
+  importUndo = { count, backup };
+  bioCmp = { a: null, b: null };
+  bioChartRange = 'tudo';
+  closeModal('modal-import');
+  importState = null;
+  currentDate = res.dates[res.dates.length - 1];  // abre na medição mais recente importada
+  renderAll();
+}
+
+function undoImport() {
+  if (!importUndo || !confirm(`Desfazer a importação de ${importUndo.count} medições?`)) return;
+  cache.weights = importUndo.backup;
+  saveToCloud('weights');
+  importUndo = null;
+  bioCmp = { a: null, b: null };
+  renderAll();
 }
 
 /* ══════════════════════════════════

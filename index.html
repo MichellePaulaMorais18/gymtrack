@@ -112,6 +112,7 @@
         <button class="btn-icon" onclick="shiftDate(1)">▶</button>
       </div>
       <div id="corpo-content"></div>
+      <input type="file" id="import-file" accept=".xlsx,.xls,.csv" hidden onchange="handleImportFile(this)">
     </section>
 
     <!-- ── TAB: HISTÓRICO ── -->
@@ -211,6 +212,15 @@
       <p class="food-hint">Valores referentes a 1 porção. No prato você escolhe quantas porções (pode ser 0,5 / 1,5...).</p>
       <button type="submit" class="btn-primary btn-block">Salvar</button>
     </form>
+  </div>
+</div>
+
+<!-- ══ MODAL: importar planilha de bioimpedância ══ -->
+<div id="modal-import" class="modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal('modal-import')">✕</button>
+    <h3>📥 Importar planilha</h3>
+    <div id="import-body"></div>
   </div>
 </div>
 
