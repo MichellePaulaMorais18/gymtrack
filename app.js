@@ -2709,7 +2709,12 @@ function colIndex(key) { return importState.mapping.indexOf(key); }
 function detectDateOrder() {
   const di = colIndex('date'), yi = colIndex('year');
   if (di < 0) return 'DM';
-  const pairs = importState.rows.map(r => dateParts(r[di], yi >= 0 ? r[yi] : '')).filter(p => p && p.a !== undefined);
+  return guessDateOrder(importState.rows.map(r => dateParts(r[di], yi >= 0 ? r[yi] : '')));
+}
+
+// Recebe partes de datas ({a,b,y} ambíguas ou {y,m,d}) e decide entre dia-mês e mês-dia
+function guessDateOrder(parts) {
+  const pairs = parts.filter(p => p && p.a !== undefined);
   if (!pairs.length) return 'DM';
   if (pairs.some(p => p.a > 12)) return 'DM';
   if (pairs.some(p => p.b > 12)) return 'MD';
@@ -2853,6 +2858,492 @@ function undoImport() {
   importUndo = null;
   bioCmp = { a: null, b: null };
   renderAll();
+}
+
+/* ══════════════════════════════════
+   IMPORTAR / EXPORTAR HISTÓRICO DE DIETA
+   Formatos: planilha (uma linha por alimento), JSON ({days:[...]}) ou backup do próprio app.
+   Em planilha/JSON, os nutrientes de cada linha são o TOTAL do que foi comido naquela linha.
+══════════════════════════════════ */
+const DIET_COLUMNS = {
+  date:  ['data', 'date', 'dia'],
+  year:  ['ano', 'year'],
+  time:  ['hora', 'horario', 'tempo', 'time'],
+  meal:  ['refeicao', 'refeicoes', 'meal', 'tipo', 'tipoderefeicao'],
+  food:  ['alimento', 'alimentos', 'comida', 'food', 'item', 'nome', 'name', 'produto'],
+  qty:   ['quantidade', 'qtd', 'qtde', 'porcao', 'porcoes', 'quantity', 'amount', 'qty', 'gramas'],
+  kcal:  ['calorias', 'caloria', 'kcal', 'cal', 'energia', 'calories'],
+  prot:  ['proteina', 'proteinas', 'protein', 'prot'],
+  carb:  ['carboidrato', 'carboidratos', 'carbo', 'carbs', 'hidratos', 'carbohydrates', 'carb'],
+  gord:  ['gordura', 'gorduras', 'gorduratotal', 'lipidios', 'fat', 'gord'],
+  fib:   ['fibra', 'fibras', 'fiber', 'fib'],
+  acuc:  ['acucar', 'acucares', 'sugar', 'acuc'],
+  sodio: ['sodio', 'sodium'],
+  water: ['agua', 'water', 'aguaml']
+};
+const MEAL_ALIASES = [
+  [/cafe|desjejum|breakfast|manha/, '☕ Café da manhã'],
+  [/almoco|lunch/, '🍽️ Almoço'],
+  [/jantar|janta|dinner/, '🌙 Jantar'],
+  [/ceia/, '🍎 Ceia'],
+  [/lanche|snack|colacao/, '🥪 Lanche']
+];
+const DIET_JSON_EXAMPLE = `{
+  "days": [
+    {
+      "date": "2025-10-06",
+      "water": 2000,
+      "meals": [
+        {
+          "name": "Café da manhã",
+          "items": [
+            { "food": "Ovo", "qty": "2 unidades", "kcal": 156, "prot": 12.6, "carb": 1.2, "gord": 10.6 },
+            { "food": "Café", "qty": "200ml", "kcal": 6 }
+          ]
+        },
+        {
+          "name": "Almoço",
+          "items": [
+            { "food": "Peixe (tilápia)", "qty": "150g", "kcal": 192, "prot": 39, "gord": 4 }
+          ]
+        }
+      ]
+    }
+  ]
+}`;
+
+let dietImport = null;  // {kind:'sheet'|'json'|'backup', fileName, header, rows, mapping, order, conflict, json}
+let dietUndo = null;    // {count, nutrition, foods, templates}
+
+const clone = o => JSON.parse(JSON.stringify(o));
+const round2 = n => Math.round(n * 100) / 100;
+function normName(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+
+function normMealName(s) {
+  const raw = String(s || '').trim();
+  if (!raw) return '🍽️ Refeição';
+  const n = normHeader(raw);
+  const hit = MEAL_ALIASES.find(([re]) => re.test(n));
+  return hit ? hit[1] : raw;
+}
+
+// "120g" → {n:120, unit:'g'}; "2" → {n:2, unit:''} (número puro = porções); "1,5 kg" → {n:1500, unit:'g'}
+function parseAmount(s) {
+  const m = String(s ?? '').trim().toLowerCase().replace(',', '.').match(/^(\d+(?:\.\d+)?)\s*([a-zà-ú]*)/);
+  if (!m) return null;
+  const n = +m[1];
+  let unit = m[2] || '';
+  if (unit === 'kg') return { n: n * 1000, unit: 'g' };
+  if (/^(l|litro|litros)$/.test(unit)) return { n: n * 1000, unit: 'ml' };
+  if (/^(g|gr|grama|gramas)$/.test(unit)) unit = 'g';
+  else if (/^(un|und|unid|unidade|unidades)$/.test(unit)) unit = 'un';
+  return { n, unit };
+}
+
+/* ── Tela inicial: escolher arquivo, colar JSON, baixar modelo, exportar ── */
+function openDietImport() {
+  dietImport = null;
+  document.getElementById('diet-import-body').innerHTML = `
+    <p class="food-hint">Importe refeições antigas de outro app ou de uma planilha. Cada linha (ou item do JSON) é <b>o que você comeu</b>, com os nutrientes daquela quantidade.</p>
+    <button class="btn-primary btn-block" onclick="document.getElementById('diet-import-file').click()">📄 Escolher arquivo (.xlsx, .csv ou .json)</button>
+    <button class="btn-add-serie" onclick="downloadDietTemplate()">⬇️ Baixar planilha modelo</button>
+
+    <p class="bio-group">📋 Ou cole um JSON</p>
+    <textarea id="diet-json-text" class="json-input" rows="5" placeholder='{ "days": [ { "date": "2025-10-06", "meals": [ ... ] } ] }'></textarea>
+    <button class="btn-add-serie" onclick="readPastedDietJson()">Ler JSON colado</button>
+    <details class="json-help">
+      <summary>Ver formato do JSON</summary>
+      <pre>${esc(DIET_JSON_EXAMPLE)}</pre>
+      <p class="food-hint">Nomes de campo em português também funcionam (data, refeicao, alimento, quantidade, calorias, proteina, carboidratos, gordura, fibra, acucar, sodio, agua). Só <b>food</b> é obrigatório; o resto é opcional.</p>
+    </details>
+    <button class="btn-add-serie" onclick="copyAiPrompt()">🤖 Copiar instruções para uma IA transcrever prints do outro app</button>
+
+    <p class="bio-group">📤 Backup</p>
+    <button class="btn-add-serie" onclick="exportDietBackup()">📤 Exportar backup da dieta (JSON)</button>
+    <p class="food-hint">O backup inclui alimentos, refeições prontas, refeições de todos os dias, água e metas. Dá para importar ele aqui de volta.</p>`;
+  document.getElementById('modal-diet-import').classList.add('show');
+}
+
+async function downloadDietTemplate() {
+  try {
+    await loadXlsxLib();
+    const aoa = [
+      ['Data', 'Refeição', 'Alimento', 'Quantidade', 'Calorias', 'Proteína', 'Carboidratos', 'Gordura', 'Fibra', 'Açúcar', 'Sódio', 'Água (ml)'],
+      ['06/10/2025', 'Café da manhã', 'Ovo', '2 unidades', 156, 12.6, 1.2, 10.6, 0, 0, 124, ''],
+      ['06/10/2025', 'Café da manhã', 'Pão francês', '1 unidade', 135, 4.5, 28, 1.5, 1.2, 1.5, 290, ''],
+      ['06/10/2025', 'Almoço', 'Arroz', '150g', 195, 3.8, 42, 0.5, 0.6, 0, 2, ''],
+      ['06/10/2025', '', '', '', '', '', '', '', '', '', '', 2000]
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Dieta');
+    XLSX.writeFile(wb, 'modelo-dieta-gymtrack.xlsx');
+  } catch (e) { alert('Não consegui gerar o modelo: ' + e.message); }
+}
+
+function copyAiPrompt() {
+  const prompt = `Transcreva o histórico de alimentação dos prints que vou enviar para este formato JSON, sem comentários, só o JSON:\n\n${DIET_JSON_EXAMPLE}\n\nRegras: uma entrada em "days" por dia (data no formato AAAA-MM-DD); em cada refeição, um item por alimento com o nome ("food"), a quantidade como aparece no print ("qty", ex.: "60g", "300ml", "2 unidades") e os nutrientes daquela quantidade (kcal, prot, carb, gord, fib, acuc em gramas e sodio em mg) quando aparecerem. Omita os campos que não aparecerem no print.`;
+  navigator.clipboard.writeText(prompt)
+    .then(() => alert('Instruções copiadas! Cole numa IA junto com os prints e depois cole o JSON que ela gerar aqui.'))
+    .catch(() => { document.getElementById('diet-json-text').value = prompt; alert('Não consegui copiar automaticamente; deixei as instruções no campo de JSON para você copiar.'); });
+}
+
+function exportDietBackup() {
+  const data = { app: 'gymtrack', version: 1, exportedAt: new Date().toISOString(),
+                 foods: cache.foods, templates: cache.templates, nutrition: cache.nutrition, settings: cache.settings };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `gymtrack-dieta-${toDateStr(new Date())}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+/* ── Leitura do arquivo / texto ── */
+async function handleDietFile(input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    if (/\.json$/i.test(file.name)) { startJsonImport(await file.text(), file.name); return; }
+    await loadXlsxLib();
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', raw: true });
+    const all = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: '' });
+    const hi = all.findIndex(r => r.filter(c => typeof c === 'string' && c.trim() && isNaN(Number(c))).length >= 2);
+    if (hi < 0) throw new Error('não encontrei a linha de títulos das colunas');
+    const header = all[hi].map(h => String(h).trim());
+    const rows = all.slice(hi + 1).filter(r => r.some(c => String(c).trim() !== ''));
+    const mapping = autoMapDiet(header, rows);
+    dietImport = { kind: 'sheet', fileName: file.name, header, rows, mapping, conflict: 'skip' };
+    dietImport.order = sheetDateOrder();
+    renderDietImport();
+  } catch (e) { alert('Não consegui ler o arquivo: ' + e.message); }
+}
+
+function readPastedDietJson() {
+  const text = document.getElementById('diet-json-text').value.trim();
+  if (!text) { alert('Cole o JSON no campo primeiro.'); return; }
+  startJsonImport(text, 'JSON colado');
+}
+
+function startJsonImport(text, name) {
+  let json;
+  try {
+    // Aceita JSON dentro de bloco de código (como IAs costumam responder)
+    json = JSON.parse(text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, ''));
+  } catch (e) { alert('O JSON tem algum erro de formatação: ' + e.message); return; }
+  const isBackup = json && !Array.isArray(json) && (json.app === 'gymtrack' || json.nutrition);
+  dietImport = { kind: isBackup ? 'backup' : 'json', fileName: name, json, conflict: 'skip' };
+  dietImport.order = jsonDateOrder();
+  renderDietImport();
+}
+
+function autoMapDiet(header, rows) {
+  const used = new Set();
+  const mapping = header.map(h => {
+    const n = normHeader(h);
+    const key = Object.keys(DIET_COLUMNS).find(k => !used.has(k) && DIET_COLUMNS[k].includes(n));
+    if (key) used.add(key);
+    return key || '';
+  });
+  if (!used.has('year')) header.forEach((h, i) => {
+    if (mapping[i] || used.has('year')) return;
+    const vals = rows.map(r => r[i]).filter(v => String(v).trim() !== '');
+    if (vals.length && vals.every(v => { const n = Number(v); return Number.isInteger(n) && n >= 1990 && n <= 2100; })) { mapping[i] = 'year'; used.add('year'); }
+  });
+  return mapping;
+}
+
+function dietCol(key) { return dietImport.mapping.indexOf(key); }
+
+function sheetDateOrder() {
+  const di = dietCol('date'), yi = dietCol('year');
+  return di < 0 ? 'DM' : guessDateOrder(dietImport.rows.map(r => dateParts(r[di], yi >= 0 ? r[yi] : '')));
+}
+
+// Lê um campo de objeto JSON aceitando nomes em português/inglês (via DIET_COLUMNS)
+function jget(obj, key) {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const k = Object.keys(obj).find(x => DIET_COLUMNS[key] ? DIET_COLUMNS[key].includes(normHeader(x)) || x === key : x === key);
+  return k !== undefined ? obj[k] : undefined;
+}
+
+function jsonDays(json) {
+  if (Array.isArray(json)) return json;
+  return json.days || json.dias || json.historico || [];
+}
+
+function jsonDateOrder() {
+  if (dietImport.kind === 'backup') return 'DM';
+  const days = jsonDays(dietImport.json);
+  const dates = Array.isArray(days) ? days.map(d => jget(d, 'date')) : [];
+  return guessDateOrder(dates.map(d => dateParts(d, '')));
+}
+
+/* ── Normaliza tudo em "linhas": {date, time, meal, food, qtyText, nut, water} ── */
+function dietRows() {
+  const st = dietImport;
+  const out = [];
+  let invalid = 0;
+  const pickNut = get => {
+    const nut = {};
+    let any = false;
+    NUTRIENTS.forEach(n => { const v = importNum(get(n.k) ?? ''); if (v !== null) { nut[n.k] = v; any = true; } });
+    return any ? nut : null;
+  };
+  if (st.kind === 'sheet') {
+    const col = k => dietCol(k);
+    const di = col('date'), yi = col('year');
+    st.rows.forEach((r, idx) => {
+      const date = di >= 0 ? resolveDate(dateParts(r[di], yi >= 0 ? r[yi] : ''), st.order) : null;
+      if (!date) { invalid++; return; }
+      const get = k => col(k) >= 0 ? r[col(k)] : undefined;
+      const food = String(get('food') ?? '').trim();
+      const water = importNum(get('water') ?? '');
+      if (!food && !water) { invalid++; return; }
+      out.push({ date, idx, time: String(get('time') ?? ''), meal: normMealName(get('meal')), food,
+                 qtyText: String(get('qty') ?? '').trim(), nut: food ? pickNut(get) : null, water: water || 0 });
+    });
+  } else {
+    const days = jsonDays(st.json);
+    if (!Array.isArray(days)) return { rows: [], invalid: 1 };
+    days.forEach((day, di) => {
+      const date = resolveDate(dateParts(jget(day, 'date'), ''), st.order);
+      if (!date) { invalid++; return; }
+      const water = importNum(jget(day, 'water') ?? '') || 0;
+      if (water) out.push({ date, idx: di * 1000, meal: '', food: '', water });
+      const meals = day.meals || day.refeicoes || [];
+      // Também aceita itens soltos no dia: {date, items:[...]} ou {date, food:...}
+      const list = meals.length ? meals : [{ name: jget(day, 'meal'), items: day.items || day.itens || (jget(day, 'food') ? [day] : []) }];
+      list.forEach((meal, mi) => (meal.items || meal.itens || meal.alimentos || []).forEach((it, ii) => {
+        const food = String(jget(it, 'food') ?? '').trim();
+        if (!food) { invalid++; return; }
+        const qty = jget(it, 'qty');
+        out.push({ date, idx: di * 1000 + mi * 50 + ii, meal: normMealName(meal.name ?? jget(meal, 'meal')), food,
+                   qtyText: qty !== undefined ? String(qty).trim() : '', portionText: it.portion || it.porcao || '',
+                   nut: pickNut(k => jget(it, k)), water: 0 });
+      }));
+    });
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date) || String(a.time || '').localeCompare(String(b.time || '')) || a.idx - b.idx);
+  return { rows: out, invalid };
+}
+
+/* ── Casa cada linha com um alimento do Cardápio (ou cria um novo) ── */
+function resolveDietItem(row, registry, newFoods, stats) {
+  const key = normName(row.food);
+  const cands = registry.filter(f => normName(f.name) === key);
+  const amt = parseAmount(row.qtyText);
+  const use = (f, qty) => { if (!newFoods.includes(f)) stats.matched++; return { food: f, qty }; };
+  for (const f of cands) {  // mesma unidade (g, ml, un): quantidade proporcional
+    const fa = parseAmount(f.portion);
+    if (amt && amt.unit && fa && fa.unit === amt.unit && fa.n > 0) return use(f, round2(amt.n / fa.n));
+  }
+  if (cands.length) {
+    const f = cands[0];
+    if (amt && !amt.unit) return use(f, amt.n);                                         // "2" = 2 porções
+    if (row.nut && row.nut.kcal && f.kcal) return use(f, round2(row.nut.kcal / f.kcal));
+    if (!row.nut) return use(f, 1);
+  }
+  // Novo alimento: a linha vira 1 porção (ou N porções se a quantidade for número puro)
+  const pure = amt && !amt.unit ? amt.n : null;
+  const div = pure || 1;
+  const food = { id: uid(), name: row.food, portion: pure ? (row.portionText || '1 porção') : (row.qtyText || row.portionText || '1 porção') };
+  NUTRIENTS.forEach(n => { food[n.k] = row.nut && row.nut[n.k] !== undefined ? round2(row.nut[n.k] / div) : 0; });
+  registry.push(food); newFoods.push(food);
+  if (!food.kcal) stats.noKcal++;
+  return { food, qty: pure || 1 };
+}
+
+// Monta o plano: {days:{data:{water, meals}}, newFoods, stats}
+function computeDietPlan() {
+  const st = dietImport;
+  if (st.kind === 'backup') return computeBackupPlan();
+  const { rows, invalid } = dietRows();
+  const registry = cache.foods.map(f => f);
+  const newFoods = [];
+  const stats = { matched: 0, noKcal: 0, items: 0, invalid };
+  const days = {};
+  rows.forEach(row => {
+    const day = days[row.date] = days[row.date] || { water: 0, meals: [] };
+    if (row.water) day.water += row.water;
+    if (!row.food) return;
+    let meal = day.meals.find(m => m.name === row.meal);
+    if (!meal) { meal = { id: uid(), name: row.meal, items: [] }; day.meals.push(meal); }
+    const { food, qty } = resolveDietItem(row, registry, newFoods, stats);
+    meal.items.push({ foodId: food.id, qty });
+    stats.items++;
+  });
+  return finishPlan(days, newFoods, stats, registry);
+}
+
+function computeBackupPlan() {
+  const b = dietImport.json;
+  const registry = cache.foods.map(f => f);
+  const newFoods = [], idMap = {};
+  const stats = { matched: 0, noKcal: 0, items: 0, invalid: 0, templates: 0 };
+  (b.foods || []).forEach(f => {
+    const same = registry.find(x => normName(x.name) === normName(f.name) && normName(x.portion) === normName(f.portion)
+      && Math.abs((Number(x.kcal) || 0) - (Number(f.kcal) || 0)) < 1);
+    if (same) { idMap[f.id] = same.id; stats.matched++; return; }
+    const nf = { ...f, id: uid() };
+    idMap[f.id] = nf.id; registry.push(nf); newFoods.push(nf);
+  });
+  const days = {};
+  Object.entries(b.nutrition || {}).forEach(([date, d]) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { stats.invalid++; return; }
+    days[date] = { water: Number(d.water) || 0, meals: (d.meals || []).map(m => ({
+      id: uid(), name: m.name, items: (m.items || []).filter(it => idMap[it.foodId]).map(it => { stats.items++; return { foodId: idMap[it.foodId], qty: it.qty }; })
+    })) };
+  });
+  const templates = (b.templates || []).filter(t => !cache.templates.some(x => normName(x.name) === normName(t.name)))
+    .map(t => ({ id: uid(), name: t.name, items: (t.items || []).filter(it => idMap[it.foodId]).map(it => ({ foodId: idMap[it.foodId], qty: it.qty })) }));
+  stats.templates = templates.length;
+  const plan = finishPlan(days, newFoods, stats, registry);
+  plan.templates = templates;
+  plan.goals = b.settings && b.settings.goals;
+  plan.waterGoal = b.settings && b.settings.waterGoal;
+  return plan;
+}
+
+function finishPlan(days, newFoods, stats, registry) {
+  const dates = Object.keys(days).sort();
+  const byId = new Map(registry.map(f => [f.id, f]));
+  let kcal = 0, meals = 0;
+  dates.forEach(d => days[d].meals.forEach(m => {
+    meals++;
+    m.items.forEach(it => { const f = byId.get(it.foodId); kcal += f ? (Number(f.kcal) || 0) * it.qty : 0; });
+  }));
+  const conflicts = dates.filter(d => (cache.nutrition[d] && (cache.nutrition[d].meals || []).some(m => (m.items || []).length))).length;
+  return { days, dates, newFoods, stats, meals, kcal, conflicts, byId };
+}
+
+/* ── Prévia ── */
+function renderDietImport() {
+  const st = dietImport;
+  const plan = computeDietPlan();
+  const kindName = { sheet: 'Planilha', json: 'JSON', backup: 'Backup do GymTrack' }[st.kind];
+  const warnings = [];
+  if (st.kind === 'sheet' && dietCol('date') < 0) warnings.push('⚠️ Escolha qual coluna é a <b>Data</b>.');
+  if (st.kind === 'sheet' && dietCol('food') < 0) warnings.push('⚠️ Escolha qual coluna é o <b>Alimento</b>.');
+  if (plan.stats.invalid) warnings.push(`ℹ️ ${plural(plan.stats.invalid, 'linha sem data ou alimento válido será ignorada', 'linhas sem data ou alimento válido serão ignoradas')}.`);
+  if (plan.stats.noKcal) warnings.push(`⚠️ ${plural(plan.stats.noKcal, 'alimento novo ficará sem calorias', 'alimentos novos ficarão sem calorias')} — dá para completar depois no 🥗 Cardápio.`);
+
+  const ambiguous = st.kind !== 'backup' && (st.kind === 'sheet'
+    ? dietCol('date') >= 0 && st.rows.some(r => { const p = dateParts(r[dietCol('date')], ''); return p && p.a !== undefined; })
+    : jsonDays(st.json).some(d => { const p = dateParts(jget(d, 'date'), ''); return p && p.a !== undefined; }));
+
+  const firstDate = plan.dates[0];
+  const sample = firstDate ? plan.days[firstDate].meals.slice(0, 3).map(m =>
+    `<p class="import-sample"><b>${esc(m.name)}:</b> ${m.items.slice(0, 4).map(it => {
+      const f = plan.byId.get(it.foodId); return f ? `${esc(f.name)}${it.qty !== 1 ? ` ×${fmtNum(it.qty)}` : ''}` : '?';
+    }).join(', ')}${m.items.length > 4 ? '…' : ''}</p>`).join('') : '';
+
+  const opts = sel => [['', '— ignorar —'], ['date', '📅 Data'], ['year', '📅 Ano'], ['time', '🕒 Horário'], ['meal', '🍽️ Refeição'],
+    ['food', '🥗 Alimento'], ['qty', '⚖️ Quantidade'], ...NUTRIENTS.map(n => [n.k, `${n.chip[0].toUpperCase() + n.chip.slice(1)} (${n.unit.trim() || 'kcal'})`]), ['water', '💧 Água (ml)']]
+    .map(([v, l]) => `<option value="${v}" ${v === sel ? 'selected' : ''}>${l}</option>`).join('');
+
+  document.getElementById('diet-import-body').innerHTML = `
+    <p class="bal-sub">📄 <b>${esc(st.fileName)}</b> · ${kindName}</p>
+    ${plan.dates.length ? `
+      <div class="bal-note">
+        <b>${plural(plan.dates.length, 'dia', 'dias')}</b> (${fmtDateFull(plan.dates[0])} a ${fmtDateFull(plan.dates[plan.dates.length - 1])}) ·
+        ${plural(plan.meals, 'refeição', 'refeições')} · ${plural(plan.stats.items, 'item', 'itens')} · ${fmtKcal(plan.kcal)} kcal no total.<br>
+        🥗 ${plan.stats.matched} reconhecido${plan.stats.matched === 1 ? '' : 's'} do seu Cardápio · ${plural(plan.newFoods.length, 'alimento novo', 'alimentos novos')}
+        ${plan.templates ? ` · ${plural(plan.templates.length, 'refeição pronta', 'refeições prontas')}` : ''}
+      </div>
+      <p class="bio-group">👀 Prévia de ${fmtDateFull(firstDate)}</p>${sample}` : '<div class="bal-note">Nenhum dia válido encontrado ainda.</div>'}
+    ${warnings.map(w => `<p class="import-warn">${w}</p>`).join('')}
+
+    ${ambiguous ? `
+      <p class="bio-group">📅 Formato da data</p>
+      <div class="period-tabs full">
+        <button class="period-btn ${st.order === 'DM' ? 'active' : ''}" onclick="dietImport.order='DM';renderDietImport()">dia/mês</button>
+        <button class="period-btn ${st.order === 'MD' ? 'active' : ''}" onclick="dietImport.order='MD';renderDietImport()">mês/dia</button>
+      </div>` : ''}
+
+    ${plan.conflicts ? `
+      <p class="bio-group">🔁 ${plural(plan.conflicts, 'dia já tem', 'dias já têm')} refeições no app</p>
+      <select class="bio-select" onchange="dietImport.conflict=this.value;renderDietImport()">
+        <option value="skip" ${st.conflict === 'skip' ? 'selected' : ''}>Pular esses dias (recomendado)</option>
+        <option value="append" ${st.conflict === 'append' ? 'selected' : ''}>Juntar com o que já existe</option>
+        <option value="replace" ${st.conflict === 'replace' ? 'selected' : ''}>Substituir pelo importado</option>
+      </select>
+      <p class="food-hint">${{ skip: 'Os dias que você já registrou ficam como estão; só entram dias novos.',
+        append: 'As refeições importadas são somadas às do dia (cuidado para não duplicar se importar o mesmo arquivo duas vezes).',
+        replace: 'As refeições desses dias no app são trocadas pelas importadas.' }[st.conflict]}</p>` : ''}
+
+    ${st.kind === 'sheet' ? `
+      <p class="bio-group">🧩 Colunas da planilha</p>
+      <div class="bio-fields">${st.header.map((h, i) => `
+        <div class="import-col">
+          <div class="import-col-name"><b>${esc(h) || '<i>(sem título)</i>'}</b><small>ex.: ${esc(String((st.rows[0] || [])[i] ?? ''))}</small></div>
+          <select onchange="dietImport.mapping[${i}]=this.value;dietImport.order=sheetDateOrder();renderDietImport()">${opts(st.mapping[i])}</select>
+        </div>`).join('')}
+      </div>` : ''}
+
+    <button class="btn-primary btn-block import-confirm" ${plan.dates.length ? '' : 'disabled'} onclick="confirmDietImport()">
+      Importar ${plural(plan.dates.length, 'dia', 'dias')}</button>
+    <button class="btn-add-serie" onclick="openDietImport()">← Voltar</button>`;
+  document.getElementById('modal-diet-import').classList.add('show');
+}
+
+function confirmDietImport() {
+  const plan = computeDietPlan();
+  dietUndo = { nutrition: clone(cache.nutrition), foods: clone(cache.foods), templates: clone(cache.templates), settings: clone(cache.settings || {}) };
+  const conflict = dietImport.conflict;
+  const usedFoods = new Set();
+  let count = 0;
+  plan.dates.forEach(date => {
+    const imp = plan.days[date];
+    const cur = cache.nutrition[date];
+    const hasMeals = cur && (cur.meals || []).some(m => (m.items || []).length);
+    if (hasMeals && conflict === 'skip') return;
+    if (!cur || !hasMeals || conflict === 'replace') {
+      cache.nutrition[date] = { water: imp.water || (cur && Number(cur.water)) || 0, meals: imp.meals };
+    } else {
+      imp.meals.forEach(m => {
+        const same = (cur.meals || []).find(x => x.name === m.name);
+        if (same) same.items = (same.items || []).concat(m.items); else (cur.meals = cur.meals || []).push(m);
+      });
+      if (imp.water && !Number(cur.water)) cur.water = imp.water;
+    }
+    imp.meals.forEach(m => m.items.forEach(it => usedFoods.add(it.foodId)));
+    count++;
+  });
+  cache.foods.push(...plan.newFoods.filter(f => usedFoods.has(f.id) || dietImport.kind === 'backup'));
+  if (plan.templates && plan.templates.length) { cache.templates.push(...plan.templates); saveToCloud('templates'); }
+  if (!cache.settings) cache.settings = {};
+  if (plan.goals && !(cache.settings.goals && cache.settings.goals.kcal)) cache.settings.goals = plan.goals;
+  if (plan.waterGoal && !cache.settings.waterGoal) cache.settings.waterGoal = plan.waterGoal;
+  saveToCloud('settings');
+  saveToCloud('foods');
+  saveNutrition();
+  dietUndo.count = count;
+  closeModal('modal-diet-import');
+  dietImport = null;
+  if (plan.dates.length) currentDate = plan.dates[plan.dates.length - 1];
+  renderAll();
+  renderDietUndoNote();
+}
+
+function renderDietUndoNote() {
+  const el = document.getElementById('diet-import-note');
+  if (!el) return;
+  el.innerHTML = dietUndo ? `
+    <div class="bal-note import-done">✅ ${plural(dietUndo.count, 'dia importado', 'dias importados')}.
+      <button class="btn-mini" onclick="undoDietImport()">↩ Desfazer</button></div>` : '';
+}
+
+function undoDietImport() {
+  if (!dietUndo || !confirm(`Desfazer a importação de ${plural(dietUndo.count, 'dia', 'dias')}?`)) return;
+  cache.nutrition = dietUndo.nutrition;
+  cache.foods = dietUndo.foods;
+  cache.templates = dietUndo.templates;
+  cache.settings = dietUndo.settings;
+  ['nutrition', 'foods', 'templates', 'settings'].forEach(saveToCloud);
+  dietUndo = null;
+  renderAll();
+  renderDietUndoNote();
 }
 
 /* ══════════════════════════════════

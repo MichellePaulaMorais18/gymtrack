@@ -645,6 +645,21 @@ body.dark .bio-tag.warn { color: #fbbf24; }
 .ctrl-sub b { color: var(--text); }
 
 .import-btn { margin: 0 0 10px; }
+.json-input {
+  width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--input-bg); color: var(--text); font-family: Consolas, monospace; font-size: 0.78rem;
+  resize: vertical;
+}
+.json-input:focus { outline: 2px solid var(--primary); border-color: transparent; }
+.json-help { margin: 10px 0 4px; font-size: 0.85rem; }
+.json-help summary { cursor: pointer; font-weight: 700; color: var(--primary); }
+.json-help pre {
+  background: var(--bg); border-radius: 10px; padding: 10px; margin: 8px 0;
+  font-size: 0.7rem; overflow-x: auto; max-height: 260px;
+}
+.import-sample { font-size: 0.8rem; margin: 4px 0; line-height: 1.4; }
+#modal-diet-import .btn-add-serie { margin-top: 8px; }
+#diet-import-note .import-done { margin-top: 12px; }
 .import-done { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 0; }
 .import-warn { font-size: 0.82rem; margin: 6px 0; line-height: 1.4; }
 .import-col {

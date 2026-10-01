@@ -73,7 +73,10 @@
       <div id="dieta-meals"></div>
       <button class="btn-primary btn-block" onclick="openMealModal()">＋ Adicionar refeição</button>
       <div id="dieta-track"></div>
+      <div id="diet-import-note"></div>
       <button class="link-btn" onclick="showTab('cardapio')">🥗 Gerenciar alimentos e refeições prontas →</button>
+      <button class="link-btn" onclick="openDietImport()">📥 Importar histórico / 📤 exportar backup →</button>
+      <input type="file" id="diet-import-file" accept=".xlsx,.xls,.csv,.json" hidden onchange="handleDietFile(this)">
     </section>
 
     <!-- ── TAB: CARDÁPIO ── -->
@@ -223,6 +226,15 @@
     <button class="modal-close" onclick="closeModal('modal-goals')">✕</button>
     <h3>🎯 Metas diárias</h3>
     <div id="goals-body"></div>
+  </div>
+</div>
+
+<!-- ══ MODAL: importar histórico de dieta ══ -->
+<div id="modal-diet-import" class="modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal('modal-diet-import')">✕</button>
+    <h3>📥 Histórico de dieta</h3>
+    <div id="diet-import-body"></div>
   </div>
 </div>
 
