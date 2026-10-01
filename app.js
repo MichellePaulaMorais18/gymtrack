@@ -1797,61 +1797,170 @@ function bioSeries(key) {
   return dates.map(d => ({ date: d, v: Number(cache.weights[d][key]) }));
 }
 
+// Nomes curtos para as abas de métrica
+const BIO_SHORT = {
+  w: 'Peso', imc: 'IMC', height: 'Altura', age: 'Idade', bf: 'Gordura', fatKg: 'Peso gordura',
+  visceral: 'Visceral', obesity: 'Obesidade', musclePct: '% Músc. esquel.', muscleKg: 'Massa muscular',
+  smm: 'Músc. esquelético', muscleRate: 'Reg. massa musc.', lbm: 'LBM', bone: 'Ossos', protein: 'Proteína',
+  waterPct: 'Água', waterKg: 'Peso água', bmr: 'Metabolismo', metaAge: 'Idade metab.'
+};
+const MAX_POINTS = 16;
+
+// Agrupa as medições para o gráfico não virar um borrão: por medição, semana, 2 semanas ou mês
+function bioBuckets(series) {
+  if (series.length <= MAX_POINTS) {
+    return { by: 'medição', points: series.map(x => ({ label: fmtDateShort(x.date), title: fmtDateFull(x.date), v: x.v, n: 1 })) };
+  }
+  const t0 = parseDate(series[0].date), t1 = parseDate(series[series.length - 1].date);
+  const span = (t1 - t0) / 864e5 + 1;
+  const mode = span / 7 <= MAX_POINTS ? 7 : span / 14 <= MAX_POINTS ? 14 : 'mes';
+  const monday = d => { const x = parseDate(d); x.setDate(x.getDate() - (x.getDay() + 6) % 7); return x; };
+  const ref = monday(series[0].date);
+  const groups = new Map();
+  series.forEach(x => {
+    let key, start;
+    if (mode === 'mes') { key = x.date.slice(0, 7); start = key + '-01'; }
+    else {
+      const idx = Math.floor(Math.round((monday(x.date) - ref) / 864e5) / mode);
+      const s = new Date(ref); s.setDate(s.getDate() + idx * mode);
+      key = idx; start = toDateStr(s);
+    }
+    if (!groups.has(key)) groups.set(key, { start, vals: [] });
+    groups.get(key).vals.push(x.v);
+  });
+  const points = [...groups.values()].map(g => {
+    const [y, mo] = g.start.split('-');
+    return {
+      label: mode === 'mes' ? `${MONTHS_SHORT[+mo - 1]}/${y.slice(2)}` : fmtDateShort(g.start),
+      title: mode === 'mes' ? `${MONTHS[+mo - 1]} de ${y}` : `${mode === 7 ? 'Semana' : '2 semanas'} a partir de ${fmtDateFull(g.start)}`,
+      v: g.vals.reduce((a, b) => a + b, 0) / g.vals.length, n: g.vals.length
+    };
+  });
+  return { by: mode === 'mes' ? 'mês' : mode === 7 ? 'semana' : '2 semanas', points };
+}
+
 function bioChartCardHtml() {
   const available = BIO_METRICS.filter(m => bioDates().some(d => cache.weights[d][m.k] !== undefined));
   if (!available.length) return '';
   if (!available.some(m => m.k === bioChartKey)) bioChartKey = available[0].k;
   const m = bioMetric(bioChartKey);
   const series = bioSeries(bioChartKey);
+  const tabs = available.map(a =>
+    `<button class="metric-tab ${a.k === bioChartKey ? 'active' : ''}" onclick="bioChartKey='${a.k}';renderCorpo()">${BIO_SHORT[a.k] || a.label}</button>`).join('');
   const ranges = [['3', '3 meses'], ['6', '6 meses'], ['12', '1 ano'], ['tudo', 'Tudo']].map(([v, l]) =>
     `<button class="period-btn ${bioChartRange === v ? 'active' : ''}" onclick="bioChartRange='${v}';renderCorpo()">${l}</button>`).join('');
-  let stats = '<p class="bal-sub">Sem medições dessa métrica no intervalo.</p>';
+
+  let body = '<p class="bal-sub">Sem medições dessa métrica no intervalo.</p>';
   if (series.length) {
-    const vals = series.map(x => x.v);
     const first = series[0], last = series[series.length - 1];
-    stats = `
-      <div class="bal-grid">
-        <div class="sum-chip"><b>${fmtBio(m, first.v)}</b><small>primeira (${fmtDateShort(first.date)})</small></div>
-        <div class="sum-chip"><b>${fmtBio(m, last.v)}</b><small>última (${fmtDateShort(last.date)})</small></div>
-        <div class="sum-chip"><b>${series.length > 1 ? fmtBioDelta(m, last.v - first.v) : '—'}</b><small>variação</small></div>
-        <div class="sum-chip"><b>${fmtBio(m, Math.min(...vals))}</b><small>mínimo</small></div>
-        <div class="sum-chip"><b>${fmtBio(m, Math.max(...vals))}</b><small>máximo</small></div>
-        <div class="sum-chip"><b>${series.length}</b><small>medições</small></div>
+    const max = series.reduce((a, b) => b.v > a.v ? b : a), min = series.reduce((a, b) => b.v < a.v ? b : a);
+    const avg = series.reduce((t, x) => t + x.v, 0) / series.length;
+    const days = Math.round((parseDate(last.date) - parseDate(first.date)) / 864e5) + 1;
+    const delta = last.v - first.v;
+    const dir = !m.good || Math.abs(delta) < 1e-9 ? '' : (delta * m.good > 0 ? 'good' : 'bad');
+    const arrow = Math.abs(delta) < 1e-9 ? '' : delta > 0 ? '↑' : '↓';
+    const num = v => fmtNum(Math.round(v * 10 ** m.dec) / 10 ** m.dec);
+    const unit = m.unit ? ` (${m.unit})` : '';
+    const buckets = bioBuckets(series);
+    body = `
+      ${series.length > 1 ? '<div class="body-chart-wrap"><canvas id="body-chart"></canvas></div>' : ''}
+      <div class="bio-summary">
+        <div class="bio-sum-head">
+          <span>${bioChartRange === 'tudo' ? 'Todo o período' : 'Nos últimos'} · ${days} dia${days === 1 ? '' : 's'}</span>
+          <span>${fmtDateFull(first.date)} ~ ${fmtDateFull(last.date)}</span>
+        </div>
+        <div class="bio-sum-grid">
+          <div><b>${num(avg)}</b><small>${m.k === 'w' ? 'Peso médio' : 'Média'}${unit}</small></div>
+          <div class="right"><b class="bio-delta-big ${dir}">${arrow} ${num(Math.abs(delta))}</b><small>Variação</small></div>
+          <div><b>${num(max.v)}</b><small>Máximo<br>${fmtDateFull(max.date)}</small></div>
+          <div class="right"><b>${num(min.v)}</b><small>Mínimo<br>${fmtDateFull(min.date)}</small></div>
+        </div>
+        <p class="bio-sum-foot">${series.length} medições${buckets.by !== 'medição' ? ` · cada ponto do gráfico é a média por ${buckets.by}` : ''}</p>
       </div>`;
   }
   return `
     <div class="entry-card">
-      <div class="entry-head"><span class="entry-name">📈 Evolução da métrica</span></div>
-      <select class="bio-select" onchange="bioChartKey=this.value;renderCorpo()">
-        ${BIO_GROUPS.map(g => {
-          const opts = g.metrics.filter(([k]) => available.some(a => a.k === k))
-            .map(([k, label]) => `<option value="${k}" ${k === bioChartKey ? 'selected' : ''}>${label}</option>`).join('');
-          return opts ? `<optgroup label="${g.name}">${opts}</optgroup>` : '';
-        }).join('')}
-      </select>
+      <div class="entry-head"><span class="entry-name">📈 Evolução · ${m.label}</span></div>
+      <div class="metric-tabs" id="metric-tabs">${tabs}</div>
       <div class="period-tabs full">${ranges}</div>
-      ${series.length > 1 ? '<canvas id="body-chart"></canvas>' : ''}
-      ${stats}
+      ${body}
     </div>`;
 }
+
+// Escreve o valor em cima de cada ponto (pulando alguns se ficarem apertados)
+const valueLabelsPlugin = {
+  id: 'valueLabels',
+  afterDatasetsDraw(chart, args, opts) {
+    const meta = chart.getDatasetMeta(0);
+    const data = chart.data.datasets[0].data;
+    if (!meta.data.length) return;
+    const gap = meta.data.length > 1 ? Math.abs(meta.data[1].x - meta.data[0].x) : 999;
+    const step = Math.max(1, Math.ceil(34 / gap));
+    const { ctx } = chart;
+    ctx.save();
+    ctx.font = '600 11px "Segoe UI", system-ui, sans-serif';
+    ctx.fillStyle = opts.color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    meta.data.forEach((pt, i) => {
+      const isLast = i === meta.data.length - 1;
+      if (i % step && !isLast) return;
+      if (!isLast && step > 1 && meta.data.length - 1 - i < step) return;  // evita colar no último
+      const text = opts.format(data[i]);
+      const half = ctx.measureText(text).width / 2;
+      const x = Math.min(Math.max(pt.x, half + 2), chart.width - half - 2);  // não deixa cortar nas bordas
+      ctx.fillText(text, x, pt.y - 7);
+    });
+    ctx.restore();
+  }
+};
 
 function drawBodyChart() {
   if (bodyChart) { bodyChart.destroy(); bodyChart = null; }
   const canvas = document.getElementById('body-chart');
+  // Mantém a aba de métrica ativa visível na barra rolável
+  const tabsEl = document.getElementById('metric-tabs');
+  const active = tabsEl && tabsEl.querySelector('.active');
+  if (active) tabsEl.scrollLeft = active.offsetLeft - tabsEl.clientWidth / 2 + active.clientWidth / 2;
   if (!canvas) return;
   const m = bioMetric(bioChartKey);
-  const series = bioSeries(bioChartKey);
+  const { points } = bioBuckets(bioSeries(bioChartKey));
+  const dark = document.body.classList.contains('dark');
+  const muted = dark ? '#94a3b8' : '#6b7280';
+  const fmt = v => fmtNum(Math.round(v * 10 ** m.dec) / 10 ** m.dec);
   bodyChart = new Chart(canvas, {
     type: 'line',
     data: {
-      labels: series.map(x => fmtDateShort(x.date)),
-      datasets: [{ label: m.label, data: series.map(x => x.v), borderColor: '#ea580c',
-                   backgroundColor: 'rgba(234,88,12,0.12)', fill: true, tension: 0.25, pointRadius: 4 }]
+      labels: points.map(p => p.label),
+      datasets: [{
+        data: points.map(p => Math.round(p.v * 100) / 100),
+        borderColor: '#ea580c', borderWidth: 2.5,
+        backgroundColor: 'rgba(234,88,12,0.07)', fill: 'start', tension: 0.4,
+        pointRadius: 3.5, pointHoverRadius: 6, pointBackgroundColor: dark ? '#1a1d27' : '#fff',
+        pointBorderColor: '#ea580c', pointBorderWidth: 2
+      }]
     },
+    plugins: [valueLabelsPlugin],
     options: {
-      responsive: true,
-      plugins: { legend: { display: false } },
-      scales: { y: { ticks: { callback: v => fmtNum(v) + (m.unit === '%' ? '%' : '') } }, x: { ticks: { maxTicksLimit: 8 } } }
+      responsive: true, maintainAspectRatio: false,
+      layout: { padding: { top: 18, right: 14, left: 4 } },
+      plugins: {
+        legend: { display: false },
+        valueLabels: { color: muted, format: fmt },
+        tooltip: { callbacks: {
+          title: items => points[items[0].dataIndex].title,
+          label: item => {
+            const p = points[item.dataIndex];
+            return `${p.n > 1 ? 'média ' : ''}${fmtBio(m, p.v)}${p.n > 1 ? ` (${p.n} medições)` : ''}`;
+          }
+        } }
+      },
+      scales: {
+        y: { grace: '12%', border: { display: false },
+             grid: { color: dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)' },
+             ticks: { maxTicksLimit: 5, color: muted, callback: v => fmtNum(Math.round(v * 10) / 10) } },
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 6, color: muted, maxRotation: 0 } }
+      }
     }
   });
 }
